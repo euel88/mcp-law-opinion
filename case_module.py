@@ -25,7 +25,7 @@ class CourtType(Enum):
     
     def __init__(self, code: str, name: str):
         self.code = code
-        self.label = label
+        self.label = name  # 수정: label -> name
 
 
 class DecisionType(Enum):
@@ -40,7 +40,7 @@ class DecisionType(Enum):
     
     def __init__(self, code: str, name: str):
         self.code = code
-        self.label = label
+        self.label = name  # 수정: label -> name
 
 
 class CaseSearcher:
@@ -674,7 +674,7 @@ class CaseSearcher:
             
             result = self.api_client.get_detail('decc', **params)
             
-            if result.get('status') == 'success':
+            if result.get('status') == 'success'):
                 return {
                     'status': 'success',
                     'tribunal': self._normalize_admin_tribunal_detail(result.get('data', {}))
