@@ -557,7 +557,11 @@ class CommitteeDecisionSearcher:
             response = self.api_client.search(
                 target=committee_code,
                 query=query if query else None,
-                **params
+                search=search if query else None,
+                display=display,
+                page=page,
+                sort=sort,
+                gana=gana if gana else None
             )
             
             # 결과 파싱 및 정규화
