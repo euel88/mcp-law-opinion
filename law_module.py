@@ -2,7 +2,7 @@
 law_module.py - 법제처 Open API 통합 모듈
 모든 법령 검색 기능을 포함한 완전한 구현
 작성일: 2024
-버전: 2.1 (API 호출 수정 버전)
+버전: 2.2 (Python 3.13 호환 및 API 호출 수정 버전)
 """
 
 import os
@@ -13,6 +13,7 @@ from datetime import datetime
 import logging
 import requests
 from urllib.parse import quote, urlencode
+import re
 
 # 로깅 설정
 logging.basicConfig(
@@ -38,6 +39,13 @@ class LawAPIClient:
             oc_key: 법제처 API 인증키 (사용자 이메일 ID)
         """
         self.oc_key = oc_key
+        self.test_mode = False
+        
+        # API 키 검증
+        if not oc_key or oc_key == 'test' or len(oc_key) < 20:
+            logger.warning(f"테스트 모드로 실행 중 (API 키 길이: {len(oc_key) if oc_key else 0})")
+            self.test_mode = True
+        
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -56,30 +64,36 @@ class LawAPIClient:
         """
         url = f"{self.BASE_URL}/lawSearch.do"
         
-        # 필수 파라미터 설정
-        params['OC'] = self.oc_key
-        params['target'] = target
+        # None 값 필터링 강화
+        filtered_params = {k: v for k, v in params.items() if v is not None}
         
-        # type 파라미터를 XML로 강제 설정 (중요한 변경!)
-        params['type'] = 'XML'  # JSON 대신 XML 사용
+        # 필수 파라미터 설정
+        filtered_params['OC'] = self.oc_key
+        filtered_params['target'] = target
+        
+        # type 파라미터를 XML로 강제 설정
+        filtered_params['type'] = 'XML'
         
         # query가 없으면 기본값 설정
-        if 'query' not in params:
-            params['query'] = '*'
+        if 'query' not in filtered_params:
+            filtered_params['query'] = '*'
         
         logger.debug(f"API 호출: {url}")
-        logger.debug(f"파라미터: {params}")
+        logger.debug(f"파라미터: {filtered_params}")
         
         try:
-            response = self.session.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=filtered_params, timeout=30)
             response.raise_for_status()
             
-            # XML 응답 파싱 (수정된 부분)
+            # XML 응답 파싱
             return self._parse_xml_response(response.text, target)
                 
         except requests.exceptions.RequestException as e:
             logger.error(f"API 요청 실패: {str(e)}")
-            return {"error": str(e), "totalCnt": 0}
+            return {"error": str(e), "totalCnt": 0, "results": []}
+        except Exception as e:
+            logger.error(f"예상치 못한 오류: {str(e)}")
+            return {"error": str(e), "totalCnt": 0, "results": []}
     
     def get_detail(self, target: str, **params) -> Dict:
         """
@@ -94,26 +108,30 @@ class LawAPIClient:
         """
         url = f"{self.BASE_URL}/lawService.do"
         
-        params['OC'] = self.oc_key
-        params['target'] = target
+        # None 값 필터링
+        filtered_params = {k: v for k, v in params.items() if v is not None}
         
-        # type 파라미터를 XML로 강제 설정 (중요한 변경!)
-        params['type'] = 'XML'  # JSON 대신 XML 사용
+        filtered_params['OC'] = self.oc_key
+        filtered_params['target'] = target
+        filtered_params['type'] = 'XML'
         
         try:
-            response = self.session.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=filtered_params, timeout=30)
             response.raise_for_status()
             
-            # XML 응답 파싱 (수정된 부분)
+            # XML 응답 파싱
             return self._parse_xml_response(response.text, target)
                 
         except requests.exceptions.RequestException as e:
             logger.error(f"상세 조회 실패: {str(e)}")
             return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"예상치 못한 오류: {str(e)}")
+            return {"error": str(e)}
 
     def _parse_xml_response(self, xml_text: str, target: str) -> Dict:
         """
-        XML 응답을 파싱하여 JSON 형태로 변환
+        XML 응답을 파싱하여 JSON 형태로 변환 (개선된 버전)
         
         Args:
             xml_text: XML 응답 텍스트
@@ -132,7 +150,6 @@ class LawAPIClient:
                 xml_text = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_text
             
             # 특수문자 제거
-            import re
             xml_text = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', xml_text)
             
             # XML 파싱
@@ -161,7 +178,21 @@ class LawAPIClient:
                 'ordin': 'ordin',
                 'trty': 'trty',
                 'eflaw': 'eflaw',
-                'elaw': 'elaw'
+                'elaw': 'elaw',
+                'lsHistory': 'lsHistory',
+                'lsHstInf': 'lsHstInf',
+                'lsJoHstInf': 'lsJoHstInf',
+                'oldAndNew': 'oldAndNew',
+                'lsStmd': 'lsStmd',
+                'thdCmp': 'thdCmp',
+                'lsDelegated': 'lsDelegated',
+                'lnkLs': 'lnkLs',
+                'lnkLsOrdJo': 'lnkLsOrdJo',
+                'lnkDep': 'lnkDep',
+                'drlaw': 'drlaw',
+                'lsAbrv': 'lsAbrv',
+                'delHst': 'delHst',
+                'oneview': 'oneview'
             }
             
             # 결과 태그 결정
@@ -174,6 +205,14 @@ class LawAPIClient:
                 for child in item:
                     if child.text:
                         item_dict[child.tag] = child.text.strip()
+                    # 하위 요소가 있는 경우 처리
+                    elif len(child) > 0:
+                        sub_dict = {}
+                        for subchild in child:
+                            if subchild.text:
+                                sub_dict[subchild.tag] = subchild.text.strip()
+                        if sub_dict:
+                            item_dict[child.tag] = sub_dict
                 
                 if item_dict:
                     result['results'].append(item_dict)
@@ -190,17 +229,20 @@ class LawAPIClient:
             logger.error(f"XML 파싱 오류: {str(e)}")
             logger.debug(f"파싱 실패한 XML (처음 500자): {xml_text[:500]}")
             
+            # 빈 결과 반환 (오류 대신)
             return {
                 'error': f'XML 파싱 오류: {str(e)}',
                 'totalCnt': 0,
-                'results': []
+                'results': [],
+                target: []
             }
         except Exception as e:
             logger.error(f"예상치 못한 오류: {str(e)}")
             return {
                 'error': f'오류: {str(e)}',
                 'totalCnt': 0,
-                'results': []
+                'results': [],
+                target: []
             }
             
 class LawSearcher:
@@ -339,22 +381,29 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            # 선택적 파라미터 추가
-            if date: params['date'] = date
-            if ef_yd: params['efYd'] = ef_yd
-            if anc_yd: params['ancYd'] = anc_yd
-            if anc_no: params['ancNo'] = anc_no
-            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
-            if nb: params['nb'] = nb
-            if org: params['org'] = org
-            if knd: params['knd'] = knd
-            if ls_chap_no: params['lsChapNo'] = ls_chap_no
-            if gana: params['gana'] = gana
-            if pop_yn: params['popYn'] = pop_yn
+            # 선택적 파라미터 추가 (None 값 제외)
+            optional_params = {
+                'date': date,
+                'efYd': ef_yd,
+                'ancYd': anc_yd,
+                'ancNo': anc_no,
+                'rrClsCd': rr_cls_cd,
+                'nb': nb,
+                'org': org,
+                'knd': knd,
+                'lsChapNo': ls_chap_no,
+                'gana': gana,
+                'popYn': pop_yn
+            }
+            
+            # None이 아닌 값만 추가
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"현행법령 검색 - 검색어: {query}, 페이지: {page}")
             
-            # API 호출 (수정된 방식)
+            # API 호출
             result = self.client.search(target=self.TARGETS['LAW'], **params)
             
             # 에러 체크
@@ -367,7 +416,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('law', [])
+                    'results': result.get('law', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -412,12 +461,18 @@ class LawSearcher:
                 'LANG': lang
             }
             
-            if law_id: params['ID'] = law_id
-            if mst: params['MST'] = mst
-            if lm: params['LM'] = lm
-            if ld: params['LD'] = ld
-            if ln: params['LN'] = ln
-            if jo: params['JO'] = jo
+            optional_params = {
+                'ID': law_id,
+                'MST': mst,
+                'LM': lm,
+                'LD': ld,
+                'LN': ln,
+                'JO': jo
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"법령 상세 조회 - ID: {law_id or mst}")
             
@@ -477,18 +532,24 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if nw: params['nw'] = nw
-            if lid: params['LID'] = lid
-            if ef_yd: params['efYd'] = ef_yd
-            if date: params['date'] = date
-            if anc_yd: params['ancYd'] = anc_yd
-            if anc_no: params['ancNo'] = anc_no
-            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
-            if nb: params['nb'] = nb
-            if org: params['org'] = org
-            if knd: params['knd'] = knd
-            if gana: params['gana'] = gana
-            if pop_yn: params['popYn'] = pop_yn
+            optional_params = {
+                'nw': nw,
+                'LID': lid,
+                'efYd': ef_yd,
+                'date': date,
+                'ancYd': anc_yd,
+                'ancNo': anc_no,
+                'rrClsCd': rr_cls_cd,
+                'nb': nb,
+                'org': org,
+                'knd': knd,
+                'gana': gana,
+                'popYn': pop_yn
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"시행일 법령 검색 - 검색어: {query}")
             
@@ -501,7 +562,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('eflaw', [])
+                    'results': result.get('eflaw', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -541,12 +602,17 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if law_id: params['ID'] = law_id
-            if mst: 
-                params['MST'] = mst
-                if ef_yd: params['efYd'] = ef_yd
-            if jo: params['JO'] = jo
-            if chr_cls_cd: params['chrClsCd'] = chr_cls_cd
+            optional_params = {
+                'ID': law_id,
+                'MST': mst,
+                'efYd': ef_yd,
+                'JO': jo,
+                'chrClsCd': chr_cls_cd
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"시행일 법령 상세 조회 - ID: {law_id or mst}")
             
@@ -599,16 +665,22 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if ef_yd: params['efYd'] = ef_yd
-            if date: params['date'] = date
-            if anc_yd: params['ancYd'] = anc_yd
-            if anc_no: params['ancNo'] = anc_no
-            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
-            if org: params['org'] = org
-            if knd: params['knd'] = knd
-            if ls_chap_no: params['lsChapNo'] = ls_chap_no
-            if gana: params['gana'] = gana
-            if pop_yn: params['popYn'] = pop_yn
+            optional_params = {
+                'efYd': ef_yd,
+                'date': date,
+                'ancYd': anc_yd,
+                'ancNo': anc_no,
+                'rrClsCd': rr_cls_cd,
+                'org': org,
+                'knd': knd,
+                'lsChapNo': ls_chap_no,
+                'gana': gana,
+                'popYn': pop_yn
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"법령 연혁 목록 검색 - 검색어: {query}")
             
@@ -652,12 +724,18 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if law_id: params['ID'] = law_id
-            if mst: params['MST'] = mst
-            if lm: params['LM'] = lm
-            if ld: params['LD'] = ld
-            if ln: params['LN'] = ln
-            if chr_cls_cd: params['chrClsCd'] = chr_cls_cd
+            optional_params = {
+                'ID': law_id,
+                'MST': mst,
+                'LM': lm,
+                'LD': ld,
+                'LN': ln,
+                'chrClsCd': chr_cls_cd
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"법령 연혁 상세 조회 - ID: {law_id or mst}")
             
@@ -704,11 +782,17 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if law_id: params['ID'] = law_id
-            if mst: params['MST'] = mst
-            if hang: params['HANG'] = hang
-            if ho: params['HO'] = ho
-            if mok: params['MOK'] = quote(mok)  # 한글 인코딩
+            optional_params = {
+                'ID': law_id,
+                'MST': mst,
+                'HANG': hang,
+                'HO': ho,
+                'MOK': quote(mok) if mok else None
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"조항호목 조회 - 법령: {law_id or mst}, 조: {jo}")
             
@@ -761,13 +845,18 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if law_id: params['ID'] = law_id
-            if mst: 
-                params['MST'] = mst
-                if ef_yd: params['efYd'] = ef_yd
-            if hang: params['HANG'] = hang
-            if ho: params['HO'] = ho
-            if mok: params['MOK'] = quote(mok)
+            optional_params = {
+                'ID': law_id,
+                'MST': mst,
+                'efYd': ef_yd,
+                'HANG': hang,
+                'HO': ho,
+                'MOK': quote(mok) if mok else None
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"시행일법령 조항호목 조회 - 법령: {law_id or mst}, 조: {jo}")
             
@@ -823,16 +912,22 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if date: params['date'] = date
-            if ef_yd: params['efYd'] = ef_yd
-            if anc_yd: params['ancYd'] = anc_yd
-            if anc_no: params['ancNo'] = anc_no
-            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
-            if nb: params['nb'] = nb
-            if org: params['org'] = org
-            if knd: params['knd'] = knd
-            if gana: params['gana'] = gana
-            if pop_yn: params['popYn'] = pop_yn
+            optional_params = {
+                'date': date,
+                'efYd': ef_yd,
+                'ancYd': anc_yd,
+                'ancNo': anc_no,
+                'rrClsCd': rr_cls_cd,
+                'nb': nb,
+                'org': org,
+                'knd': knd,
+                'gana': gana,
+                'popYn': pop_yn
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"영문법령 검색 - 검색어: {query}")
             
@@ -845,7 +940,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('elaw', [])
+                    'results': result.get('elaw', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -885,11 +980,17 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if law_id: params['ID'] = law_id
-            if mst: params['MST'] = mst
-            if lm: params['LM'] = lm
-            if ld: params['LD'] = ld
-            if ln: params['LN'] = ln
+            optional_params = {
+                'ID': law_id,
+                'MST': mst,
+                'LM': lm,
+                'LD': ld,
+                'LN': ln
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"영문법령 상세 조회 - ID: {law_id or mst}")
             
@@ -938,8 +1039,14 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if org: params['org'] = org
-            if pop_yn: params['popYn'] = pop_yn
+            optional_params = {
+                'org': org,
+                'popYn': pop_yn
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"법령 변경이력 조회 - 날짜: {reg_dt}")
             
@@ -952,7 +1059,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('lsHstInf', [])
+                    'results': result.get('lsHstInf', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -994,12 +1101,18 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if reg_dt: params['regDt'] = reg_dt
-            if from_reg_dt: params['fromRegDt'] = from_reg_dt
-            if to_reg_dt: params['toRegDt'] = to_reg_dt
-            if law_id: params['ID'] = law_id
-            if jo: params['JO'] = jo
-            if org: params['org'] = org
+            optional_params = {
+                'regDt': reg_dt,
+                'fromRegDt': from_reg_dt,
+                'toRegDt': to_reg_dt,
+                'ID': law_id,
+                'JO': jo,
+                'org': org
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"조문 개정 이력 조회 - 법령: {law_id}, 조: {jo}")
             
@@ -1012,7 +1125,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('lsJoHstInf', [])
+                    'results': result.get('lsJoHstInf', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -1096,7 +1209,8 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if pop_yn: params['popYn'] = pop_yn
+            if pop_yn is not None:
+                params['popYn'] = pop_yn
             
             logger.info(f"법령-자치법규 연계 검색 - 검색어: {query}")
             
@@ -1109,7 +1223,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('lnkLs', [])
+                    'results': result.get('lnkLs', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -1156,10 +1270,16 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if knd: params['knd'] = knd
-            if jo: params['JO'] = jo
-            if jobr: params['JOBR'] = jobr
-            if pop_yn: params['popYn'] = pop_yn
+            optional_params = {
+                'knd': knd,
+                'JO': jo,
+                'JOBR': jobr,
+                'popYn': pop_yn
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"조례 조문 검색 - 검색어: {query}")
             
@@ -1172,7 +1292,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('lnkLsOrdJo', [])
+                    'results': result.get('lnkLsOrdJo', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -1213,7 +1333,8 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if pop_yn: params['popYn'] = pop_yn
+            if pop_yn is not None:
+                params['popYn'] = pop_yn
             
             logger.info(f"소관부처별 연계 법령 조회 - 부처: {org}")
             
@@ -1226,7 +1347,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('lnkDep', [])
+                    'results': result.get('lnkDep', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -1286,8 +1407,14 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if law_id: params['ID'] = law_id
-            if mst: params['MST'] = mst
+            optional_params = {
+                'ID': law_id,
+                'MST': mst
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"위임 법령 조회 - ID: {law_id or mst}")
             
@@ -1340,16 +1467,22 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if ef_yd: params['efYd'] = ef_yd
-            if anc_yd: params['ancYd'] = anc_yd
-            if date: params['date'] = date
-            if nb: params['nb'] = nb
-            if anc_no: params['ancNo'] = anc_no
-            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
-            if org: params['org'] = org
-            if knd: params['knd'] = knd
-            if gana: params['gana'] = gana
-            if pop_yn: params['popYn'] = pop_yn
+            optional_params = {
+                'efYd': ef_yd,
+                'ancYd': anc_yd,
+                'date': date,
+                'nb': nb,
+                'ancNo': anc_no,
+                'rrClsCd': rr_cls_cd,
+                'org': org,
+                'knd': knd,
+                'gana': gana,
+                'popYn': pop_yn
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"법령 체계도 목록 검색 - 검색어: {query}")
             
@@ -1362,7 +1495,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('lsStmd', [])
+                    'results': result.get('lsStmd', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -1402,11 +1535,17 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if law_id: params['ID'] = law_id
-            if mst: params['MST'] = mst
-            if lm: params['LM'] = lm
-            if ld: params['LD'] = ld
-            if ln: params['LN'] = ln
+            optional_params = {
+                'ID': law_id,
+                'MST': mst,
+                'LM': lm,
+                'LD': ld,
+                'LN': ln
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"법령 체계도 상세 조회 - ID: {law_id or mst}")
             
@@ -1459,16 +1598,22 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if ef_yd: params['efYd'] = ef_yd
-            if anc_yd: params['ancYd'] = anc_yd
-            if date: params['date'] = date
-            if nb: params['nb'] = nb
-            if anc_no: params['ancNo'] = anc_no
-            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
-            if org: params['org'] = org
-            if knd: params['knd'] = knd
-            if gana: params['gana'] = gana
-            if pop_yn: params['popYn'] = pop_yn
+            optional_params = {
+                'efYd': ef_yd,
+                'ancYd': anc_yd,
+                'date': date,
+                'nb': nb,
+                'ancNo': anc_no,
+                'rrClsCd': rr_cls_cd,
+                'org': org,
+                'knd': knd,
+                'gana': gana,
+                'popYn': pop_yn
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"신구법 목록 검색 - 검색어: {query}")
             
@@ -1481,7 +1626,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('oldAndNew', [])
+                    'results': result.get('oldAndNew', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -1521,11 +1666,17 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if law_id: params['ID'] = law_id
-            if mst: params['MST'] = mst
-            if lm: params['LM'] = lm
-            if ld: params['LD'] = ld
-            if ln: params['LN'] = ln
+            optional_params = {
+                'ID': law_id,
+                'MST': mst,
+                'LM': lm,
+                'LD': ld,
+                'LN': ln
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"신구법 상세 조회 - ID: {law_id or mst}")
             
@@ -1578,16 +1729,22 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if ef_yd: params['efYd'] = ef_yd
-            if anc_yd: params['ancYd'] = anc_yd
-            if date: params['date'] = date
-            if nb: params['nb'] = nb
-            if anc_no: params['ancNo'] = anc_no
-            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
-            if org: params['org'] = org
-            if knd: params['knd'] = knd
-            if gana: params['gana'] = gana
-            if pop_yn: params['popYn'] = pop_yn
+            optional_params = {
+                'efYd': ef_yd,
+                'ancYd': anc_yd,
+                'date': date,
+                'nb': nb,
+                'ancNo': anc_no,
+                'rrClsCd': rr_cls_cd,
+                'org': org,
+                'knd': knd,
+                'gana': gana,
+                'popYn': pop_yn
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"3단 비교 목록 검색 - 검색어: {query}")
             
@@ -1600,7 +1757,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('thdCmp', [])
+                    'results': result.get('thdCmp', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -1643,11 +1800,17 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if law_id: params['ID'] = law_id
-            if mst: params['MST'] = mst
-            if lm: params['LM'] = lm
-            if ld: params['LD'] = ld
-            if ln: params['LN'] = ln
+            optional_params = {
+                'ID': law_id,
+                'MST': mst,
+                'LM': lm,
+                'LD': ld,
+                'LN': ln
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"3단 비교 상세 조회 - ID: {law_id or mst}, 종류: {knd}")
             
@@ -1684,8 +1847,14 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if std_dt: params['stdDt'] = std_dt
-            if end_dt: params['endDt'] = end_dt
+            optional_params = {
+                'stdDt': std_dt,
+                'endDt': end_dt
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info("법령명 약칭 조회")
             
@@ -1697,7 +1866,7 @@ class LawSearcher:
             if isinstance(result, dict):
                 return {
                     'totalCnt': result.get('totalCnt', 0),
-                    'results': result.get('lsAbrv', [])
+                    'results': result.get('lsAbrv', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -1738,10 +1907,16 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if knd: params['knd'] = knd
-            if del_dt: params['delDt'] = del_dt
-            if frm_dt: params['frmDt'] = frm_dt
-            if to_dt: params['toDt'] = to_dt
+            optional_params = {
+                'knd': knd,
+                'delDt': del_dt,
+                'frmDt': frm_dt,
+                'toDt': to_dt
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"삭제 데이터 조회 - 종류: {knd}, 날짜: {del_dt}")
             
@@ -1754,7 +1929,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('delHst', [])
+                    'results': result.get('delHst', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -1801,7 +1976,7 @@ class LawSearcher:
                 return {
                     'totalCnt': result.get('totalCnt', 0),
                     'page': result.get('page', page),
-                    'results': result.get('oneview', [])
+                    'results': result.get('oneview', result.get('results', []))
                 }
             
             return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
@@ -1839,10 +2014,16 @@ class LawSearcher:
                 'type': output_type.lower()
             }
             
-            if lm: params['LM'] = lm
-            if ld: params['LD'] = ld
-            if ln: params['LN'] = ln
-            if jo: params['JO'] = jo
+            optional_params = {
+                'LM': lm,
+                'LD': ld,
+                'LN': ln,
+                'JO': jo
+            }
+            
+            for key, value in optional_params.items():
+                if value is not None:
+                    params[key] = value
             
             logger.info(f"한눈보기 상세 조회 - MST: {mst}")
             
