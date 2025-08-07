@@ -616,7 +616,7 @@ class OpenAIHelper:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_tokens=1500
+                max_completion_tokens=1500
             )
             
             return response.choices[0].message.content
@@ -735,7 +735,7 @@ class OpenAIHelper:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.5,
-                max_tokens=2000
+                max_completion_tokens=2000
             )
             
             return response.choices[0].message.content
