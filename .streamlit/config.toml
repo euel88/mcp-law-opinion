@@ -1,0 +1,89 @@
+# Streamlit Configuration File
+# Place this file in .streamlit/config.toml
+
+[server]
+# Maximum file upload size (in MB)
+maxUploadSize = 200
+
+# Maximum message size (in MB)
+maxMessageSize = 200
+
+# Enable/disable CORS protection
+enableCORS = false
+
+# Enable/disable XSRF protection
+enableXsrfProtection = true
+
+# Port for the app (default 8501)
+port = 8501
+
+# Address to bind to
+address = "0.0.0.0"
+
+# Automatically rerun script when the file is modified
+runOnSave = true
+
+# File watcher type
+fileWatcherType = "none"  # Important for cloud deployment
+
+[browser]
+# Server address for the browser
+serverAddress = "localhost"
+
+# Port for the browser
+serverPort = 8501
+
+# Gather usage statistics
+gatherUsageStats = false
+
+[runner]
+# Allow Streamlit magic commands
+magicEnabled = true
+
+# Install a Python tracer
+installTracer = false
+
+# Fix matplotlib backend
+fixMatplotlib = true
+
+# Show error details
+showErrorDetails = true
+
+# Show warnings
+showWarningOnDirectExecution = true
+
+[theme]
+# Primary color for interactive elements
+primaryColor = "#FF6B6B"
+
+# Background color for the main content area
+backgroundColor = "#FFFFFF"
+
+# Background color for sidebar
+secondaryBackgroundColor = "#F0F2F6"
+
+# Text color
+textColor = "#262730"
+
+# Font family
+font = "sans serif"
+
+[client]
+# Show footer
+showFooter = true
+
+# Show side bar nav chevron
+showSidebarNavigation = true
+
+[deprecation]
+# Show deprecation warnings
+showfileUploaderEncoding = false
+showImageFormat = false
+showPyplotGlobalUse = false
+
+[logger]
+# Level of logging
+level = "info"
+
+# String format for logging
+messageFormat = "%(asctime)s %(message)s"
