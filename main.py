@@ -1,7 +1,7 @@
 """
 K-Law Assistant - 통합 법률 검토 지원 시스템
-Main Application with Streamlit UI (Complete Version 3.0)
-모든 모듈의 기능을 완전히 구현한 버전
+Main Application with Streamlit UI (Fixed Version 3.1)
+모든 위젯 ID 충돌 문제 해결
 """
 
 import os
@@ -65,8 +65,8 @@ def init_session_state():
         st.session_state.selected_model = 'gpt-4o-mini'
         st.session_state.cache = {}
         st.session_state.api_clients = None
-        st.session_state.selected_committees = []  # 위원회 선택
-        st.session_state.selected_ministries = []  # 부처 선택
+        st.session_state.selected_committees = []
+        st.session_state.selected_ministries = []
         logger.info("Session state initialized successfully")
 
 # ========================= API Clients Initialization =========================
@@ -113,17 +113,19 @@ def render_sidebar():
                 "법제처 API Key",
                 value=st.session_state.api_keys.get('law_api_key', ''),
                 type="password",
-                help="https://open.law.go.kr 에서 발급"
+                help="https://open.law.go.kr 에서 발급",
+                key="sidebar_law_api_key"
             )
             
             openai_api_key = st.text_input(
                 "OpenAI API Key",
                 value=st.session_state.api_keys.get('openai_api_key', ''),
                 type="password",
-                help="https://platform.openai.com 에서 발급"
+                help="https://platform.openai.com 에서 발급",
+                key="sidebar_openai_api_key"
             )
             
-            if st.button("API 키 저장"):
+            if st.button("API 키 저장", key="save_api_keys"):
                 st.session_state.api_keys['law_api_key'] = law_api_key
                 st.session_state.api_keys['openai_api_key'] = openai_api_key
                 st.cache_resource.clear()
@@ -143,7 +145,8 @@ def render_sidebar():
             "모델 선택",
             options=list(models.keys()),
             format_func=lambda x: models[x],
-            index=list(models.keys()).index(st.session_state.selected_model)
+            index=list(models.keys()).index(st.session_state.selected_model),
+            key="sidebar_model_select"
         )
         
         # 빠른 검색
@@ -191,34 +194,36 @@ def render_law_search_tab():
             "법령변경이력", "조문별변경이력", "신구법비교", "법령체계도",
             "3단비교", "위임법령", "법령-자치법규연계", "한눈보기",
             "법령명약칭", "삭제데이터", "조항호목조회"
-        ]
+        ],
+        key="law_search_type"
     )
     
     # 검색어 입력
     col1, col2 = st.columns([4, 1])
     with col1:
-        query = st.text_input("검색어", placeholder="예: 도로교통법, 민법, 형법")
+        query = st.text_input("검색어", placeholder="예: 도로교통법, 민법, 형법", key="law_query")
     with col2:
-        search_btn = st.button("🔍 검색", type="primary", use_container_width=True)
+        search_btn = st.button("🔍 검색", type="primary", use_container_width=True, key="law_search_btn")
     
     # 고급 옵션
     with st.expander("고급 검색 옵션"):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            search_scope = st.selectbox("검색범위", ["법령명", "본문검색"])
-            display = st.number_input("결과 개수", min_value=1, max_value=100, value=20)
+            search_scope = st.selectbox("검색범위", ["법령명", "본문검색"], key="law_search_scope")
+            display = st.number_input("결과 개수", min_value=1, max_value=100, value=20, key="law_display")
         
         with col2:
             sort_option = st.selectbox(
                 "정렬",
-                ["법령명 오름차순", "법령명 내림차순", "공포일자 오름차순", "공포일자 내림차순"]
+                ["법령명 오름차순", "법령명 내림차순", "공포일자 오름차순", "공포일자 내림차순"],
+                key="law_sort"
             )
-            date_range = st.date_input("공포일자 범위", [])
+            date_range = st.date_input("공포일자 범위", [], key="law_date_range")
         
         with col3:
-            org = st.text_input("소관부처", placeholder="예: 법무부")
-            kind = st.selectbox("법령종류", ["전체", "법률", "대통령령", "총리령", "부령"])
+            org = st.text_input("소관부처", placeholder="예: 법무부", key="law_org")
+            kind = st.selectbox("법령종류", ["전체", "법률", "대통령령", "총리령", "부령"], key="law_kind")
     
     # 검색 실행
     if search_btn and query:
@@ -258,7 +263,7 @@ def render_law_search_tab():
                     )
                 
                 elif search_type == "법령변경이력":
-                    reg_dt = st.date_input("변경일자", datetime.now())
+                    reg_dt = st.date_input("변경일자", datetime.now(), key="law_change_date")
                     if reg_dt:
                         results = law_searcher.search_law_change_history(
                             reg_dt=int(reg_dt.strftime('%Y%m%d')),
@@ -267,8 +272,8 @@ def render_law_search_tab():
                         )
                 
                 elif search_type == "조문별변경이력":
-                    law_id = st.number_input("법령 ID", min_value=1)
-                    jo = st.number_input("조번호", min_value=1)
+                    law_id = st.number_input("법령 ID", min_value=1, key="law_article_id")
+                    jo = st.number_input("조번호", min_value=1, key="law_article_jo")
                     if law_id and jo:
                         results = law_searcher.get_article_change_history(
                             law_id=str(law_id),
@@ -295,7 +300,7 @@ def render_law_search_tab():
                     )
                 
                 elif search_type == "위임법령":
-                    law_id = st.text_input("법령 ID 또는 MST")
+                    law_id = st.text_input("법령 ID 또는 MST", key="law_delegated_id")
                     if law_id:
                         results = law_searcher.get_delegated_laws(
                             law_id=law_id
@@ -322,8 +327,8 @@ def render_law_search_tab():
                     )
                 
                 elif search_type == "조항호목조회":
-                    law_id = st.text_input("법령 ID")
-                    jo = st.text_input("조번호 (6자리)")
+                    law_id = st.text_input("법령 ID", key="law_article_detail_id")
+                    jo = st.text_input("조번호 (6자리)", key="law_article_detail_jo")
                     if law_id and jo:
                         results = law_searcher.get_law_article_detail(
                             law_id=law_id,
@@ -349,7 +354,7 @@ def render_law_search_tab():
                                         st.write(f"**법령구분:** {item.get('법령구분명', 'N/A')}")
                                     
                                     # 상세 조회 버튼
-                                    if st.button(f"상세 조회", key=f"detail_{search_type}_{idx}"):
+                                    if st.button(f"상세 조회", key=f"law_detail_{search_type}_{idx}"):
                                         detail = law_searcher.get_law_detail(
                                             law_id=item.get('법령ID'),
                                             output_type="JSON"
@@ -377,11 +382,12 @@ def render_case_search_tab():
     # 검색 유형 선택
     case_type = st.selectbox(
         "검색 유형",
-        ["법원 판례", "헌재결정례", "법령해석례", "행정심판례", "통합검색"]
+        ["법원 판례", "헌재결정례", "법령해석례", "행정심판례", "통합검색"],
+        key="case_type"
     )
     
     # 검색어 입력
-    query = st.text_input("검색어", placeholder="예: 음주운전, 개인정보, 계약")
+    query = st.text_input("검색어", placeholder="예: 음주운전, 개인정보, 계약", key="case_query")
     
     # 고급 옵션
     with st.expander("고급 검색 옵션"):
@@ -389,17 +395,17 @@ def render_case_search_tab():
         
         with col1:
             if case_type == "법원 판례":
-                court = st.selectbox("법원", ["전체", "대법원", "하급심"])
-                court_name = st.text_input("법원명", placeholder="예: 서울고등법원")
+                court = st.selectbox("법원", ["전체", "대법원", "하급심"], key="case_court")
+                court_name = st.text_input("법원명", placeholder="예: 서울고등법원", key="case_court_name")
             
-            date_range = st.date_input("날짜 범위", [])
+            date_range = st.date_input("날짜 범위", [], key="case_date_range")
             
         with col2:
-            search_in_content = st.checkbox("본문 검색", value=False)
-            display = st.number_input("결과 개수", min_value=1, max_value=100, value=20)
+            search_in_content = st.checkbox("본문 검색", value=False, key="case_content_search")
+            display = st.number_input("결과 개수", min_value=1, max_value=100, value=20, key="case_display")
     
     # 검색 실행
-    if st.button("🔍 검색", type="primary"):
+    if st.button("🔍 검색", type="primary", key="case_search_btn"):
         if not query:
             st.warning("검색어를 입력해주세요.")
             return
@@ -496,29 +502,30 @@ def render_committee_search_tab():
             "위원회 선택",
             options=[c['code'] for c in committees],
             format_func=lambda x: next(c['name'] for c in committees if c['code'] == x),
-            default=['ftc', 'ppc']  # 공정거래위원회, 개인정보보호위원회
+            default=['ftc', 'ppc'],
+            key="committee_select"
         )
     
     with col2:
-        query = st.text_input("검색어", placeholder="검색어를 입력하세요")
+        query = st.text_input("검색어", placeholder="검색어를 입력하세요", key="committee_query")
     
     # 고급 옵션
     with st.expander("고급 검색 옵션"):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            search_type = st.selectbox("검색 범위", ["제목", "본문"])
-            display = st.number_input("결과 개수", min_value=1, max_value=100, value=20)
+            search_type = st.selectbox("검색 범위", ["제목", "본문"], key="committee_search_type")
+            display = st.number_input("결과 개수", min_value=1, max_value=100, value=20, key="committee_display")
         
         with col2:
-            sort = st.selectbox("정렬", ["최신순", "오래된순", "제목순"])
+            sort = st.selectbox("정렬", ["최신순", "오래된순", "제목순"], key="committee_sort")
         
         with col3:
-            date_from = st.date_input("시작일")
-            date_to = st.date_input("종료일")
+            date_from = st.date_input("시작일", key="committee_date_from")
+            date_to = st.date_input("종료일", key="committee_date_to")
     
     # 검색 실행
-    if st.button("🔍 검색", type="primary"):
+    if st.button("🔍 검색", type="primary", key="committee_search_btn"):
         if not query and not selected_committees:
             st.warning("검색어를 입력하거나 위원회를 선택해주세요.")
             return
@@ -590,38 +597,40 @@ def render_treaty_admin_tab():
         "검색 유형",
         ["조약", "행정규칙", "자치법규", "법령 별표서식", "행정규칙 별표서식", 
          "자치법규 별표서식", "학칙", "공단규정", "공공기관규정", "법령용어", 
-         "일상용어", "법령해석(부처별)", "특별행정심판재결례"]
+         "일상용어", "법령해석(부처별)", "특별행정심판재결례"],
+        key="treaty_search_type"
     )
     
     # 검색어 입력
-    query = st.text_input("검색어", placeholder="검색어를 입력하세요")
+    query = st.text_input("검색어", placeholder="검색어를 입력하세요", key="treaty_query")
     
     # 유형별 추가 옵션
     if search_type == "조약":
         col1, col2 = st.columns(2)
         with col1:
-            treaty_type = st.selectbox("조약 유형", ["전체", "양자조약", "다자조약"])
+            treaty_type = st.selectbox("조약 유형", ["전체", "양자조약", "다자조약"], key="treaty_type")
         with col2:
-            nat_cd = st.text_input("국가코드", placeholder="예: US, JP, CN")
+            nat_cd = st.text_input("국가코드", placeholder="예: US, JP, CN", key="treaty_nat_cd")
     
     elif search_type == "행정규칙" or search_type == "자치법규":
         col1, col2 = st.columns(2)
         with col1:
-            org = st.text_input("기관", placeholder="기관명 또는 코드")
+            org = st.text_input("기관", placeholder="기관명 또는 코드", key="treaty_org")
         with col2:
             if search_type == "행정규칙":
-                kind = st.selectbox("종류", ["전체", "훈령", "예규", "고시", "지침"])
+                kind = st.selectbox("종류", ["전체", "훈령", "예규", "고시", "지침"], key="admin_kind")
             else:
-                kind = st.selectbox("종류", ["전체", "조례", "규칙", "훈령", "예규"])
+                kind = st.selectbox("종류", ["전체", "조례", "규칙", "훈령", "예규"], key="local_kind")
     
     elif "별표서식" in search_type:
-        knd = st.selectbox("별표 종류", ["전체", "별표", "서식", "별지", "별도", "부록"])
+        knd = st.selectbox("별표 종류", ["전체", "별표", "서식", "별지", "별도", "부록"], key="attachment_kind")
     
     elif search_type == "법령해석(부처별)":
         ministry = st.selectbox(
             "부처 선택",
             ["고용노동부", "국토교통부", "기획재정부", "해양수산부", 
-             "행정안전부", "환경부", "관세청", "국세청"]
+             "행정안전부", "환경부", "관세청", "국세청"],
+            key="ministry_select"
         )
         ministry_codes = {
             "고용노동부": "moelCgmExpc",
@@ -635,10 +644,10 @@ def render_treaty_admin_tab():
         }
     
     elif search_type == "특별행정심판재결례":
-        tribunal = st.selectbox("심판원", ["조세심판원", "해양안전심판원"])
+        tribunal = st.selectbox("심판원", ["조세심판원", "해양안전심판원"], key="tribunal_select")
     
     # 검색 실행
-    if st.button("🔍 검색", type="primary"):
+    if st.button("🔍 검색", type="primary", key="treaty_search_btn"):
         if not query:
             st.warning("검색어를 입력해주세요.")
             return
@@ -749,7 +758,8 @@ def render_ai_analysis_tab():
     analysis_type = st.selectbox(
         "분석 유형",
         ["법률 질문 답변", "계약서 검토", "법률 의견서 작성", 
-         "판례 분석", "법령 비교", "위원회 결정 분석"]
+         "판례 분석", "법령 비교", "위원회 결정 분석"],
+        key="ai_analysis_type"
     )
     
     # 분석 대상 입력
@@ -757,53 +767,61 @@ def render_ai_analysis_tab():
         question = st.text_area(
             "질문",
             placeholder="법률 관련 질문을 입력하세요...",
-            height=150
+            height=150,
+            key="ai_question"
         )
         
         # 참고자료 검색
-        if st.checkbox("관련 법령/판례 자동 검색"):
+        if st.checkbox("관련 법령/판례 자동 검색", key="ai_auto_search"):
             search_targets = st.multiselect(
                 "검색 대상",
                 ["법령", "판례", "해석례", "위원회결정"],
-                default=["법령", "판례"]
+                default=["법령", "판례"],
+                key="ai_search_targets"
             )
     
     elif analysis_type == "계약서 검토":
         contract = st.text_area(
             "계약서 내용",
             placeholder="검토할 계약서 내용을 붙여넣으세요...",
-            height=300
+            height=300,
+            key="ai_contract"
         )
         
         review_focus = st.multiselect(
             "검토 중점사항",
             ["독소조항", "불공정조항", "법적 리스크", "누락사항"],
-            default=["독소조항", "불공정조항"]
+            default=["독소조항", "불공정조항"],
+            key="ai_review_focus"
         )
     
     elif analysis_type == "법률 의견서 작성":
         case_facts = st.text_area(
             "사실관계",
             placeholder="사실관계를 상세히 기술하세요...",
-            height=200
+            height=200,
+            key="ai_case_facts"
         )
         
         legal_issues = st.text_area(
             "법적 쟁점",
             placeholder="검토가 필요한 법적 쟁점을 입력하세요...",
-            height=100
+            height=100,
+            key="ai_legal_issues"
         )
     
     elif analysis_type == "판례 분석":
         case_info = st.text_area(
             "판례 정보",
             placeholder="판례 내용 또는 사건번호를 입력하세요...",
-            height=200
+            height=200,
+            key="ai_case_info"
         )
         
         analysis_focus = st.selectbox(
             "분석 관점",
-            ["핵심 쟁점", "법리 해석", "판결 의미", "유사 판례 비교"]
+            ["핵심 쟁점", "법리 해석", "판결 의미", "유사 판례 비교"],
+            key="ai_analysis_focus"
         )
     
     elif analysis_type == "법령 비교":
@@ -812,29 +830,33 @@ def render_ai_analysis_tab():
             old_law = st.text_area(
                 "구법",
                 placeholder="구법 내용...",
-                height=200
+                height=200,
+                key="ai_old_law"
             )
         with col2:
             new_law = st.text_area(
                 "신법",
                 placeholder="신법 내용...",
-                height=200
+                height=200,
+                key="ai_new_law"
             )
     
     elif analysis_type == "위원회 결정 분석":
         decision_text = st.text_area(
             "위원회 결정문",
             placeholder="분석할 위원회 결정문을 입력하세요...",
-            height=200
+            height=200,
+            key="ai_decision_text"
         )
         
         committee = st.selectbox(
             "위원회",
-            ["공정거래위원회", "개인정보보호위원회", "방송통신위원회", "기타"]
+            ["공정거래위원회", "개인정보보호위원회", "방송통신위원회", "기타"],
+            key="ai_committee"
         )
     
     # AI 분석 실행
-    if st.button("🤖 AI 분석 시작", type="primary"):
+    if st.button("🤖 AI 분석 시작", type="primary", key="ai_analyze_btn"):
         with st.spinner('AI가 분석 중입니다...'):
             try:
                 ai_helper = clients['ai_helper']
@@ -845,7 +867,7 @@ def render_ai_analysis_tab():
                 if analysis_type == "법률 질문 답변":
                     # 관련 자료 검색
                     context = {}
-                    if st.session_state.get('search_targets'):
+                    if st.session_state.get('ai_auto_search'):
                         # 여기서 실제 검색 수행
                         context = perform_context_search(question, search_targets, clients)
                     
@@ -882,7 +904,7 @@ def render_ai_analysis_tab():
                     st.markdown(result)
                     
                     # 결과 저장
-                    if st.button("💾 결과 저장"):
+                    if st.button("💾 결과 저장", key="ai_save_result"):
                         st.session_state.search_history.append({
                             'query': analysis_type,
                             'timestamp': datetime.now().isoformat(),
@@ -907,14 +929,15 @@ def render_advanced_features_tab():
         "기능 선택",
         ["법령 체계도", "3단 비교", "신구법 비교", "법령 연혁 조회",
          "조문별 변경이력", "위임법령 조회", "법령-자치법규 연계",
-         "한눈보기", "통합 검색", "최근 법령 변경사항"]
+         "한눈보기", "통합 검색", "최근 법령 변경사항"],
+        key="advanced_feature"
     )
     
     if feature == "법령 체계도":
         st.subheader("📊 법령 체계도")
-        law_name = st.text_input("법령명", placeholder="예: 민법")
+        law_name = st.text_input("법령명", placeholder="예: 민법", key="adv_structure_name")
         
-        if st.button("체계도 조회"):
+        if st.button("체계도 조회", key="adv_structure_btn"):
             if law_name and clients.get('law_searcher'):
                 with st.spinner('체계도 조회 중...'):
                     result = clients['law_searcher'].search_law_structure(law_name)
@@ -926,10 +949,10 @@ def render_advanced_features_tab():
     
     elif feature == "3단 비교":
         st.subheader("🔀 3단 비교")
-        law_name = st.text_input("법령명")
-        comparison_type = st.selectbox("비교 종류", ["인용조문", "위임조문"])
+        law_name = st.text_input("법령명", key="adv_3way_name")
+        comparison_type = st.selectbox("비교 종류", ["인용조문", "위임조문"], key="adv_3way_type")
         
-        if st.button("3단 비교 실행"):
+        if st.button("3단 비교 실행", key="adv_3way_btn"):
             if law_name and clients.get('law_searcher'):
                 with st.spinner('3단 비교 중...'):
                     result = clients['law_searcher'].search_three_way_comparison(law_name)
@@ -939,9 +962,9 @@ def render_advanced_features_tab():
     
     elif feature == "신구법 비교":
         st.subheader("📑 신구법 비교")
-        law_name = st.text_input("법령명")
+        law_name = st.text_input("법령명", key="adv_oldnew_name")
         
-        if st.button("신구법 비교"):
+        if st.button("신구법 비교", key="adv_oldnew_btn"):
             if law_name and clients.get('law_searcher'):
                 with st.spinner('신구법 비교 중...'):
                     result = clients['law_searcher'].search_old_new_laws(law_name)
@@ -954,9 +977,9 @@ def render_advanced_features_tab():
     
     elif feature == "법령 연혁 조회":
         st.subheader("📜 법령 연혁")
-        law_name = st.text_input("법령명")
+        law_name = st.text_input("법령명", key="adv_history_name")
         
-        if st.button("연혁 조회"):
+        if st.button("연혁 조회", key="adv_history_btn"):
             if law_name and clients.get('law_searcher'):
                 with st.spinner('연혁 조회 중...'):
                     result = clients['law_searcher'].search_law_history(law_name)
@@ -968,10 +991,10 @@ def render_advanced_features_tab():
     
     elif feature == "최근 법령 변경사항":
         st.subheader("🆕 최근 법령 변경사항")
-        date = st.date_input("조회 날짜", datetime.now())
-        org = st.text_input("소관부처", placeholder="선택사항")
+        date = st.date_input("조회 날짜", datetime.now(), key="adv_change_date")
+        org = st.text_input("소관부처", placeholder="선택사항", key="adv_change_org")
         
-        if st.button("변경사항 조회"):
+        if st.button("변경사항 조회", key="adv_change_btn"):
             if clients.get('law_searcher'):
                 with st.spinner('변경사항 조회 중...'):
                     result = clients['law_searcher'].search_law_change_history(
