@@ -1,7 +1,7 @@
 """
 K-Law Assistant - 통합 법률 검토 지원 시스템
-Main Application with Streamlit UI (Fixed Version 4.0)
-API 호출 및 데이터 처리 오류 수정
+Main Application with Streamlit UI (Fixed Version 5.0 - Python 3.13 Compatible)
+API 호출 및 데이터 처리 오류 수정 + Python 3.13 호환성 패치
 """
 
 import os
@@ -13,6 +13,35 @@ from typing import Dict, List, Optional, Any, Tuple
 import logging
 from enum import Enum
 import re
+
+# Python 3.13 호환성 패치 (TypedDict 'closed' 파라미터 문제 해결)
+if sys.version_info >= (3, 13):
+    import typing
+    import typing_extensions
+    
+    # TypedDict 패치
+    if hasattr(typing, '_TypedDictMeta'):
+        original_new = typing._TypedDictMeta.__new__
+        def patched_new(cls, name, bases, ns, total=True, **kwargs):
+            # 'closed' 파라미터 제거
+            kwargs.pop('closed', None)
+            try:
+                return original_new(cls, name, bases, ns, total=total)
+            except TypeError:
+                # total 파라미터도 문제가 되면 제거
+                return original_new(cls, name, bases, ns)
+        typing._TypedDictMeta.__new__ = staticmethod(patched_new)
+    
+    # typing_extensions도 패치
+    if hasattr(typing_extensions, '_TypedDictMeta'):
+        original_new_ext = typing_extensions._TypedDictMeta.__new__
+        def patched_new_ext(cls, name, bases, ns, total=True, **kwargs):
+            kwargs.pop('closed', None)
+            try:
+                return original_new_ext(cls, name, bases, ns, total=total)
+            except TypeError:
+                return original_new_ext(cls, name, bases, ns)
+        typing_extensions._TypedDictMeta.__new__ = staticmethod(patched_new_ext)
 
 # 환경변수 로드
 from dotenv import load_dotenv
@@ -36,7 +65,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom modules import
+# Custom modules import with error handling
 try:
     from common_api import LawAPIClient, OpenAIHelper
     from law_module import LawSearcher
@@ -48,6 +77,11 @@ except ImportError as e:
     MODULES_LOADED = False
     st.error(f"❌ 필수 모듈을 불러올 수 없습니다: {str(e)}")
     st.info("requirements.txt의 패키지를 모두 설치했는지 확인해주세요.")
+except Exception as e:
+    MODULES_LOADED = False
+    st.error(f"❌ 모듈 로드 중 오류 발생: {str(e)}")
+    if "closed" in str(e):
+        st.warning("Python 3.13 호환성 문제가 감지되었습니다. 페이지를 새로고침해주세요.")
 
 # ========================= Session State Management =========================
 
@@ -62,11 +96,12 @@ def init_session_state():
             'law_api_key': os.getenv('LAW_API_KEY', ''),
             'openai_api_key': os.getenv('OPENAI_API_KEY', '')
         }
-        st.session_state.selected_model = 'o3'
+        st.session_state.selected_model = 'gpt-4o-mini'  # 기본 모델 변경
         st.session_state.cache = {}
         st.session_state.api_clients = None
         st.session_state.selected_committees = []
         st.session_state.selected_ministries = []
+        st.session_state.test_mode = False  # 테스트 모드 플래그 추가
         logger.info("Session state initialized successfully")
 
 # ========================= API Clients Initialization =========================
@@ -81,58 +116,84 @@ def get_api_clients():
         # API 키 검증 로깅 추가
         logger.info(f"Initializing API clients...")
         logger.info(f"Law API key exists: {bool(law_api_key)}")
+        
+        # API 키 유효성 검사 개선
+        test_mode = False
         if law_api_key:
             logger.info(f"Law API key length: {len(law_api_key)}")
-            logger.info(f"Law API key preview: {law_api_key[:4]}...{law_api_key[-4:]}")
-            
-        if not law_api_key:
-            st.warning("⚠️ 법제처 API 키가 설정되지 않았습니다.")
+            if len(law_api_key) < 20:  # 실제 API 키는 보통 20자 이상
+                st.warning(f"⚠️ 테스트 모드: API 키가 짧습니다 ({len(law_api_key)}자). 실제 API 키를 사용해주세요.")
+                test_mode = True
+                st.session_state.test_mode = True
+            else:
+                logger.info(f"Law API key preview: {law_api_key[:4]}...{law_api_key[-4:]}")
+                st.session_state.test_mode = False
+        else:
+            st.warning("⚠️ 법제처 API 키가 설정되지 않았습니다. 사이드바에서 설정해주세요.")
+            st.info("테스트를 위해서는 https://open.law.go.kr 에서 무료로 API 키를 발급받으실 수 있습니다.")
             logger.warning("Law API key not found")
             return {}
         
         clients = {}
         
         # 기본 API 클라이언트
-        clients['law_client'] = LawAPIClient(oc_key=law_api_key)
-        clients['ai_helper'] = OpenAIHelper(api_key=openai_api_key) if openai_api_key else None
+        try:
+            clients['law_client'] = LawAPIClient(oc_key=law_api_key)
+            clients['ai_helper'] = OpenAIHelper(api_key=openai_api_key) if openai_api_key else None
+        except Exception as e:
+            logger.error(f"Base client init failed: {e}")
+            if "closed" in str(e):
+                st.error("Python 3.13 호환성 문제로 인한 초기화 실패. 페이지를 새로고침해주세요.")
+                return {}
         
-        # 각 검색 모듈 초기화
+        # 각 검색 모듈 초기화 (에러 처리 강화)
         try:
             clients['law_searcher'] = LawSearcher(oc_key=law_api_key)
             logger.info("LawSearcher initialized")
         except Exception as e:
             logger.error(f"LawSearcher init failed: {e}")
+            if "closed" not in str(e):  # TypedDict 오류가 아닌 경우만 재발생
+                st.error(f"법령 검색 모듈 초기화 실패: {str(e)}")
             
         try:
-            clients['case_searcher'] = CaseSearcher(api_client=clients['law_client'], ai_helper=clients['ai_helper'])
+            clients['case_searcher'] = CaseSearcher(api_client=clients.get('law_client'), ai_helper=clients.get('ai_helper'))
             logger.info("CaseSearcher initialized")
         except Exception as e:
             logger.error(f"CaseSearcher init failed: {e}")
+            if "closed" not in str(e):
+                st.error(f"판례 검색 모듈 초기화 실패: {str(e)}")
             
         try:
-            clients['advanced_case_searcher'] = AdvancedCaseSearcher(api_client=clients['law_client'], ai_helper=clients['ai_helper'])
+            clients['advanced_case_searcher'] = AdvancedCaseSearcher(api_client=clients.get('law_client'), ai_helper=clients.get('ai_helper'))
             logger.info("AdvancedCaseSearcher initialized")
         except Exception as e:
             logger.error(f"AdvancedCaseSearcher init failed: {e}")
             
         try:
-            clients['committee_searcher'] = CommitteeDecisionSearcher(api_client=clients['law_client'])
+            clients['committee_searcher'] = CommitteeDecisionSearcher(api_client=clients.get('law_client'))
             logger.info("CommitteeDecisionSearcher initialized")
         except Exception as e:
             logger.error(f"CommitteeDecisionSearcher init failed: {e}")
+            if "closed" not in str(e):
+                st.error(f"위원회 검색 모듈 초기화 실패: {str(e)}")
             
         try:
             clients['treaty_admin_searcher'] = TreatyAdminSearcher(oc_key=law_api_key)
             logger.info("TreatyAdminSearcher initialized")
         except Exception as e:
             logger.error(f"TreatyAdminSearcher init failed: {e}")
+            if "closed" not in str(e):
+                st.error(f"조약/행정규칙 검색 모듈 초기화 실패: {str(e)}")
         
         logger.info(f"API clients initialized: {list(clients.keys())}")
         return clients
         
     except Exception as e:
         logger.error(f"API clients initialization failed: {str(e)}")
-        st.error(f"API 클라이언트 초기화 실패: {str(e)}")
+        if "closed" in str(e):
+            st.error("Python 3.13 호환성 문제가 감지되었습니다. 페이지를 새로고침하거나 Python 3.12로 다운그레이드를 고려해주세요.")
+        else:
+            st.error(f"API 클라이언트 초기화 실패: {str(e)}")
         return {}
 
 # ========================= Sidebar UI =========================
@@ -142,6 +203,10 @@ def render_sidebar():
     with st.sidebar:
         st.title("⚖️ K-Law Assistant Pro")
         st.markdown("---")
+        
+        # 테스트 모드 표시
+        if st.session_state.get('test_mode', False):
+            st.warning("🧪 테스트 모드로 실행 중")
         
         # API 설정
         with st.expander("🔑 API 설정", expanded=False):
@@ -153,6 +218,13 @@ def render_sidebar():
                 key="sidebar_law_api_key"
             )
             
+            # API 키 유효성 표시
+            if law_api_key:
+                if len(law_api_key) < 20:
+                    st.error("❌ API 키가 너무 짧습니다. 실제 API 키를 입력해주세요.")
+                else:
+                    st.success("✅ API 키 형식이 올바릅니다.")
+            
             openai_api_key = st.text_input(
                 "OpenAI API Key",
                 value=st.session_state.api_keys.get('openai_api_key', ''),
@@ -161,27 +233,43 @@ def render_sidebar():
                 key="sidebar_openai_api_key"
             )
             
-            if st.button("API 키 저장", key="save_api_keys"):
-                st.session_state.api_keys['law_api_key'] = law_api_key
-                st.session_state.api_keys['openai_api_key'] = openai_api_key
-                st.cache_resource.clear()
-                st.success("API 키가 저장되었습니다!")
-                st.rerun()
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("API 키 저장", key="save_api_keys", use_container_width=True):
+                    st.session_state.api_keys['law_api_key'] = law_api_key
+                    st.session_state.api_keys['openai_api_key'] = openai_api_key
+                    st.cache_resource.clear()
+                    st.success("API 키가 저장되었습니다!")
+                    st.rerun()
+            
+            with col2:
+                if st.button("연결 테스트", key="test_api", use_container_width=True):
+                    with st.spinner("API 연결 테스트 중..."):
+                        try:
+                            test_client = LawAPIClient(oc_key=law_api_key)
+                            # 간단한 테스트 쿼리
+                            result = test_client.search(target='law', query='민법', display=1)
+                            if 'error' not in result:
+                                st.success("✅ API 연결 성공!")
+                            else:
+                                st.error(f"❌ API 연결 실패: {result.get('error')}")
+                        except Exception as e:
+                            st.error(f"❌ 연결 테스트 실패: {str(e)}")
         
         # GPT 모델 선택
         st.markdown("### 🤖 AI 모델")
         models = {
-            'o3': 'o3 (최신)',
-            'o3-mini': 'o3-mini',
-            'o4-mini': 'o4-mini',
-            'o3-pro': 'o3-pro'
+            'gpt-4o-mini': 'GPT-4o Mini (빠름)',
+            'gpt-4o': 'GPT-4o (균형)',
+            'gpt-4-turbo': 'GPT-4 Turbo (정확)',
+            'gpt-3.5-turbo': 'GPT-3.5 Turbo (경제적)'
         }
         
         st.session_state.selected_model = st.selectbox(
             "모델 선택",
             options=list(models.keys()),
             format_func=lambda x: models[x],
-            index=list(models.keys()).index(st.session_state.selected_model),
+            index=list(models.keys()).index(st.session_state.get('selected_model', 'gpt-4o-mini')),
             key="sidebar_model_select"
         )
         
@@ -406,7 +494,7 @@ def render_law_search_tab():
                                     if st.button(f"상세 조회", key=f"law_detail_{search_type}_{idx}"):
                                         detail = law_searcher.get_law_detail(
                                             law_id=item.get('법령ID', item.get('법령일련번호')),
-                                            output_type="JSON"
+                                            output_type="json"
                                         )
                                         st.json(detail)
                         else:
@@ -414,7 +502,16 @@ def render_law_search_tab():
                     else:
                         st.error(f"오류: {results.get('error', '알 수 없는 오류')}")
                         logger.error(f"검색 오류: {results}")
+                        if st.session_state.get('test_mode'):
+                            st.info("💡 테스트 모드에서는 일부 기능이 제한될 수 있습니다. 실제 API 키를 사용해주세요.")
                         
+            except TypeError as e:
+                if "closed" in str(e):
+                    st.error("Python 3.13 호환성 문제가 발생했습니다. 페이지를 새로고침해주세요.")
+                    logger.error(f"TypedDict 오류: {e}")
+                else:
+                    st.error(f"검색 중 오류 발생: {str(e)}")
+                    logger.exception(f"법령 검색 예외 발생: {e}")
             except Exception as e:
                 st.error(f"검색 중 오류 발생: {str(e)}")
                 logger.exception(f"법령 검색 예외 발생: {e}")
@@ -548,6 +645,13 @@ def render_case_search_tab():
                 else:
                     st.info("검색 결과가 없습니다.")
                 
+            except TypeError as e:
+                if "closed" in str(e):
+                    st.error("Python 3.13 호환성 문제가 발생했습니다. 페이지를 새로고침해주세요.")
+                    logger.error(f"TypedDict 오류: {e}")
+                else:
+                    st.error(f"검색 중 오류 발생: {str(e)}")
+                    logger.exception(f"판례 검색 예외 발생: {e}")
             except Exception as e:
                 st.error(f"검색 중 오류 발생: {str(e)}")
                 logger.exception(f"판례 검색 예외 발생: {e}")
@@ -652,6 +756,13 @@ def render_committee_search_tab():
                                     if detail['success']:
                                         st.json(detail['detail'])
                 
+            except TypeError as e:
+                if "closed" in str(e):
+                    st.error("Python 3.13 호환성 문제가 발생했습니다. 페이지를 새로고침해주세요.")
+                    logger.error(f"TypedDict 오류: {e}")
+                else:
+                    st.error(f"검색 중 오류 발생: {str(e)}")
+                    logger.exception(f"위원회 검색 예외 발생: {e}")
             except Exception as e:
                 st.error(f"검색 중 오류 발생: {str(e)}")
                 logger.exception(f"위원회 검색 예외 발생: {e}")
@@ -823,6 +934,13 @@ def render_treaty_admin_tab():
                     else:
                         st.error(f"오류: {results['error']}")
                         
+            except TypeError as e:
+                if "closed" in str(e):
+                    st.error("Python 3.13 호환성 문제가 발생했습니다. 페이지를 새로고침해주세요.")
+                    logger.error(f"TypedDict 오류: {e}")
+                else:
+                    st.error(f"검색 중 오류 발생: {str(e)}")
+                    logger.exception(f"조약/행정규칙 검색 예외 발생: {e}")
             except Exception as e:
                 st.error(f"검색 중 오류 발생: {str(e)}")
                 logger.exception(f"조약/행정규칙 검색 예외 발생: {e}")
@@ -998,6 +1116,13 @@ def render_ai_analysis_tab():
                         })
                         st.success("분석 결과가 저장되었습니다.")
                 
+            except TypeError as e:
+                if "closed" in str(e):
+                    st.error("Python 3.13 호환성 문제가 발생했습니다. 페이지를 새로고침해주세요.")
+                    logger.error(f"TypedDict 오류: {e}")
+                else:
+                    st.error(f"AI 분석 중 오류 발생: {str(e)}")
+                    logger.exception(f"AI 분석 예외 발생: {e}")
             except Exception as e:
                 st.error(f"AI 분석 중 오류 발생: {str(e)}")
                 logger.exception(f"AI 분석 예외 발생: {e}")
@@ -1223,10 +1348,14 @@ def main():
     st.title("⚖️ K-Law Assistant Pro")
     st.markdown("법령, 판례, 위원회 결정문, 조약 등 모든 법률자료를 통합 검색하고 AI 분석을 제공합니다.")
     
+    # Python 버전 표시
+    if sys.version_info >= (3, 13):
+        st.info(f"🐍 Python {sys.version_info.major}.{sys.version_info.minor} 호환 모드로 실행 중")
+    
     # API 키 확인
     if not st.session_state.api_keys.get('law_api_key'):
         st.warning("⚠️ 법제처 API 키가 설정되지 않았습니다. 사이드바에서 설정해주세요.")
-        st.info("테스트를 위해서는 https://open.law.go.kr 에서 API 키를 발급받아야 합니다.")
+        st.info("테스트를 위해서는 https://open.law.go.kr 에서 무료로 API 키를 발급받으실 수 있습니다.")
     
     # 탭 구성 - 모든 기능 포함
     tabs = st.tabs([
@@ -1364,9 +1493,10 @@ def main():
         
         st.info("""
         💡 **Tip**: 
-        - 복잡한 법률 문제는 o3-pro 모델을 사용하세요
+        - 복잡한 법률 문제는 GPT-4 모델을 사용하세요
         - 검색 결과는 자동으로 캐시되어 빠른 재검색이 가능합니다
         - AI 분석 시 관련 법령/판례를 자동으로 검색하여 정확도를 높입니다
+        - Python 3.13 사용 시 호환성 문제가 발생하면 페이지를 새로고침하세요
         """)
         
         st.warning("""
@@ -1374,11 +1504,21 @@ def main():
         - 본 시스템은 법률 정보 제공 목적이며, 법률자문이 아닙니다
         - 중요한 사안은 반드시 법률 전문가와 상담하세요
         - AI 분석 결과는 참고용으로만 활용하세요
+        - 실제 API 키를 사용해야 모든 기능이 정상 작동합니다
         """)
 
 if __name__ == "__main__":
     try:
         main()
+    except TypeError as e:
+        if "closed" in str(e):
+            logger.error(f"Python 3.13 TypedDict 호환성 오류: {str(e)}")
+            st.error("Python 3.13 호환성 문제가 감지되었습니다.")
+            st.info("페이지를 새로고침하거나 Python 3.12로 다운그레이드를 고려해주세요.")
+        else:
+            logger.error(f"Application error: {str(e)}")
+            st.error(f"애플리케이션 실행 중 오류가 발생했습니다: {str(e)}")
+            st.info("페이지를 새로고침하거나 관리자에게 문의해주세요.")
     except Exception as e:
         logger.error(f"Application error: {str(e)}")
         st.error(f"애플리케이션 실행 중 오류가 발생했습니다: {str(e)}")
