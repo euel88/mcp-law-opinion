@@ -1,7 +1,8 @@
 """
-law_module.py - 법령 검색 모듈
-법제처 Open API를 활용한 법령 검색 기능 구현
+law_module.py - 법제처 Open API 통합 모듈
+모든 법령 검색 기능을 포함한 완전한 구현
 작성일: 2024
+버전: 2.0
 """
 
 import os
@@ -10,34 +11,98 @@ import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 import logging
-from urllib.parse import quote
-
-# common_api 모듈이 구현되어 있다고 가정
-try:
-    from common_api import LawAPIClient
-except ImportError:
-    # 개발 중 테스트를 위한 임시 클래스
-    class LawAPIClient:
-        def __init__(self, oc_key):
-            self.oc_key = oc_key
-            self.base_url = "http://www.law.go.kr/DRF"
-        
-        def search(self, target, query, **params):
-            pass
-        
-        def get_detail(self, target, id, **params):
-            pass
+import requests
+from urllib.parse import quote, urlencode
 
 # 로깅 설정
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+
+class LawAPIClient:
+    """
+    법제처 Open API 클라이언트
+    실제 HTTP 요청을 처리하는 저수준 클래스
+    """
+    
+    BASE_URL = "http://www.law.go.kr/DRF"
+    
+    def __init__(self, oc_key: str):
+        """
+        API 클라이언트 초기화
+        
+        Args:
+            oc_key: 법제처 API 인증키 (사용자 이메일 ID)
+        """
+        self.oc_key = oc_key
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+    
+    def search(self, endpoint: str, params: Dict[str, Any]) -> Union[str, Dict]:
+        """
+        검색 API 호출
+        
+        Args:
+            endpoint: API 엔드포인트 (lawSearch.do)
+            params: 요청 파라미터
+        
+        Returns:
+            API 응답 (XML 문자열 또는 JSON 딕셔너리)
+        """
+        url = f"{self.BASE_URL}/{endpoint}"
+        params['OC'] = self.oc_key
+        
+        # type 파라미터가 없으면 JSON 기본값 설정
+        if 'type' not in params:
+            params['type'] = 'JSON'
+        
+        logger.debug(f"API 호출: {url}")
+        logger.debug(f"파라미터: {params}")
+        
+        try:
+            response = self.session.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            
+            # Content-Type 확인
+            content_type = response.headers.get('Content-Type', '')
+            
+            if params['type'] == 'JSON' or 'json' in content_type.lower():
+                try:
+                    return response.json()
+                except json.JSONDecodeError:
+                    # JSON 파싱 실패시 텍스트 반환
+                    return response.text
+            else:
+                return response.text
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API 요청 실패: {str(e)}")
+            raise
+    
+    def get_detail(self, endpoint: str, params: Dict[str, Any]) -> Union[str, Dict]:
+        """
+        상세 조회 API 호출
+        
+        Args:
+            endpoint: API 엔드포인트 (lawService.do)
+            params: 요청 파라미터
+        
+        Returns:
+            API 응답
+        """
+        return self.search(endpoint, params)
 
 
 class LawSearcher:
     """
-    법령 검색 및 조회를 위한 통합 클래스
+    법제처 Open API를 활용한 법령 검색 통합 모듈
     
-    법제처 Open API의 모든 법령 관련 기능을 제공합니다.
+    개발 가이드의 모든 26개 API 기능을 구현합니다.
     초보자도 쉽게 사용할 수 있도록 직관적인 메서드명과 상세한 문서화를 제공합니다.
     """
     
@@ -78,538 +143,933 @@ class LawSearcher:
         '타법폐지': '300210'
     }
     
-    def __init__(self, api_client: Optional[LawAPIClient] = None, oc_key: Optional[str] = None):
+    # 정렬 옵션
+    SORT_OPTIONS = {
+        '법령오름차순': 'lasc',
+        '법령내림차순': 'ldes',
+        '공포일자오름차순': 'dasc',
+        '공포일자내림차순': 'ddes',
+        '공포번호오름차순': 'nasc',
+        '공포번호내림차순': 'ndes',
+        '시행일자오름차순': 'efasc',
+        '시행일자내림차순': 'efdes'
+    }
+    
+    def __init__(self, oc_key: Optional[str] = None):
         """
         법령 검색 모듈 초기화
         
         Args:
-            api_client: LawAPIClient 인스턴스 (선택)
-            oc_key: 법제처 API 키 (api_client가 없을 때 필수)
-        """
-        if api_client:
-            self.client = api_client
-        else:
-            if not oc_key:
-                oc_key = os.getenv('LAW_API_KEY')
-            if not oc_key:
-                raise ValueError("API 키가 필요합니다. LAW_API_KEY 환경변수를 설정하거나 oc_key를 제공하세요.")
-            self.client = LawAPIClient(oc_key)
+            oc_key: 법제처 API 키 (없으면 환경변수에서 읽음)
         
-        logger.info("LawSearcher 모듈이 초기화되었습니다.")
+        Raises:
+            ValueError: API 키가 없는 경우
+        """
+        if not oc_key:
+            oc_key = os.getenv('LAW_API_KEY', 'test')  # 테스트시 'test' 사용
+        
+        if not oc_key:
+            raise ValueError("API 키가 필요합니다. LAW_API_KEY 환경변수를 설정하거나 oc_key를 제공하세요.")
+        
+        self.client = LawAPIClient(oc_key)
+        logger.info(f"LawSearcher 모듈이 초기화되었습니다. (API Key: {oc_key[:4]}...)")
     
-    # ==================== 1. 현행법령 검색 ====================
+    # ==================== 1. 법령 목록 조회 API ====================
     
     def search_laws(self, 
                     query: str = "",
                     search_type: int = 1,
+                    output_type: str = "JSON",
                     display: int = 20,
                     page: int = 1,
                     sort: str = "lasc",
+                    date: Optional[int] = None,
+                    ef_yd: Optional[str] = None,
+                    anc_yd: Optional[str] = None,
+                    anc_no: Optional[str] = None,
+                    rr_cls_cd: Optional[str] = None,
+                    nb: Optional[int] = None,
                     org: Optional[str] = None,
-                    kind: Optional[str] = None,
-                    date_range: Optional[Dict[str, str]] = None,
-                    revision_type: Optional[str] = None) -> Dict[str, Any]:
+                    knd: Optional[str] = None,
+                    ls_chap_no: Optional[str] = None,
+                    gana: Optional[str] = None,
+                    pop_yn: Optional[str] = None) -> Dict[str, Any]:
         """
-        현행법령을 검색합니다.
+        현행법령을 검색합니다. (API #1)
         
         Args:
             query: 검색어 (법령명)
             search_type: 검색범위 (1: 법령명, 2: 본문검색)
-            display: 결과 개수 (최대 100)
+            output_type: 출력형태 (HTML/XML/JSON)
+            display: 검색 결과 개수 (최대 100)
             page: 페이지 번호
-            sort: 정렬옵션 (lasc: 법령오름차순, ldes: 법령내림차순, dasc: 공포일자오름차순 등)
+            sort: 정렬옵션
+            date: 공포일자 검색
+            ef_yd: 시행일자 범위 검색 (예: '20090101~20090130')
+            anc_yd: 공포일자 범위 검색
+            anc_no: 공포번호 범위 검색
+            rr_cls_cd: 제개정 구분 코드
+            nb: 공포번호 검색
             org: 소관부처 코드
-            kind: 법령종류 코드
-            date_range: 날짜 범위 {'efYd': '20090101~20090130', 'ancYd': '20090101~20090130'}
-            revision_type: 제개정 구분 (제정, 일부개정, 전부개정 등)
+            knd: 법령종류 코드
+            ls_chap_no: 법령분류 (01-제1편 ~ 44-제44편)
+            gana: 사전식 검색 (ga, na, da 등)
+            pop_yn: 팝업창 여부 ('Y')
         
         Returns:
             검색 결과 딕셔너리
         
         Example:
             >>> searcher = LawSearcher()
-            >>> results = searcher.search_laws("도로교통법")
+            >>> results = searcher.search_laws("자동차관리법")
             >>> print(f"검색 결과: {results['totalCnt']}건")
         """
         try:
             params = {
+                'target': self.TARGETS['LAW'],
+                'type': output_type,
                 'search': search_type,
-                'display': min(display, 100),  # 최대 100개
+                'query': query,  # 필수 파라미터
+                'display': min(display, 100),
                 'page': page,
                 'sort': sort
             }
             
             # 선택적 파라미터 추가
-            if org:
-                params['org'] = org
-            if kind:
-                params['knd'] = kind
-            if date_range:
-                if 'efYd' in date_range:
-                    params['efYd'] = date_range['efYd']
-                if 'ancYd' in date_range:
-                    params['ancYd'] = date_range['ancYd']
-            if revision_type and revision_type in self.REVISION_CODES:
-                params['rrClsCd'] = self.REVISION_CODES[revision_type]
+            if date: params['date'] = date
+            if ef_yd: params['efYd'] = ef_yd
+            if anc_yd: params['ancYd'] = anc_yd
+            if anc_no: params['ancNo'] = anc_no
+            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
+            if nb: params['nb'] = nb
+            if org: params['org'] = org
+            if knd: params['knd'] = knd
+            if ls_chap_no: params['lsChapNo'] = ls_chap_no
+            if gana: params['gana'] = gana
+            if pop_yn: params['popYn'] = pop_yn
             
             logger.info(f"현행법령 검색 - 검색어: {query}, 페이지: {page}")
             
-            result = self.client.search(
-                target=self.TARGETS['LAW'],
-                query=query,
-                **params
-            )
-            
-            return self._parse_search_result(result, '현행법령')
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'law_search')
             
         except Exception as e:
             logger.error(f"현행법령 검색 실패: {str(e)}")
             return {'error': str(e), 'results': []}
     
-    # ==================== 2. 법령 본문 조회 ====================
+    # ==================== 2. 법령 본문 조회 API ====================
     
     def get_law_detail(self,
                       law_id: Optional[str] = None,
                       mst: Optional[str] = None,
-                      jo_no: Optional[str] = None,
-                      include_attachments: bool = False,
+                      output_type: str = "JSON",
+                      lm: Optional[str] = None,
+                      ld: Optional[int] = None,
+                      ln: Optional[int] = None,
+                      jo: Optional[int] = None,
                       lang: str = "KO") -> Dict[str, Any]:
         """
-        법령 상세 본문을 조회합니다.
+        법령 상세 본문을 조회합니다. (API #2)
         
         Args:
             law_id: 법령 ID
             mst: 법령 마스터 번호 (law_id와 둘 중 하나 필수)
-            jo_no: 조번호 (6자리, 예: '000200'은 2조)
-            include_attachments: 별표/서식 포함 여부
+            output_type: 출력형태 (HTML/XML/JSON)
+            lm: 법령명
+            ld: 공포일자
+            ln: 공포번호
+            jo: 조번호 (6자리, 예: 000200은 2조)
             lang: 언어 (KO: 한글, ORI: 원문)
         
         Returns:
-            법령 상세 정보 딕셔너리
-        
-        Example:
-            >>> details = searcher.get_law_detail(law_id="001823")
-            >>> print(details['법령명_한글'])
+            법령 상세 정보
         """
         if not law_id and not mst:
             raise ValueError("law_id 또는 mst 중 하나는 필수입니다.")
         
         try:
-            params = {'LANG': lang}
-            if jo_no:
-                params['JO'] = jo_no
-                
-            if law_id:
-                params['ID'] = law_id
-            else:
-                params['MST'] = mst
+            params = {
+                'target': self.TARGETS['LAW'],
+                'type': output_type,
+                'LANG': lang
+            }
+            
+            if law_id: params['ID'] = law_id
+            if mst: params['MST'] = mst
+            if lm: params['LM'] = lm
+            if ld: params['LD'] = ld
+            if ln: params['LN'] = ln
+            if jo: params['JO'] = jo
             
             logger.info(f"법령 상세 조회 - ID: {law_id or mst}")
             
-            result = self.client.get_detail(
-                target=self.TARGETS['LAW'],
-                id=law_id or mst,
-                **params
-            )
-            
-            return self._parse_law_detail(result, include_attachments)
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'law_detail')
             
         except Exception as e:
             logger.error(f"법령 상세 조회 실패: {str(e)}")
             return {'error': str(e)}
     
-    # ==================== 3. 조문별 검색 ====================
-    
-    def search_articles(self,
-                       law_id: Optional[str] = None,
-                       mst: Optional[str] = None,
-                       jo_no: str = None,
-                       hang_no: Optional[str] = None,
-                       ho_no: Optional[str] = None,
-                       mok: Optional[str] = None) -> Dict[str, Any]:
-        """
-        특정 법령의 조문을 검색합니다.
-        
-        Args:
-            law_id: 법령 ID
-            mst: 법령 마스터 번호
-            jo_no: 조번호 (6자리, 필수)
-            hang_no: 항번호 (6자리)
-            ho_no: 호번호 (6자리)
-            mok: 목 (한글자)
-        
-        Returns:
-            조문 정보 딕셔너리
-        
-        Example:
-            >>> article = searcher.search_articles(law_id="001823", jo_no="000300")
-            >>> print(article['조문내용'])
-        """
-        if not jo_no:
-            raise ValueError("조번호(jo_no)는 필수입니다.")
-        if not law_id and not mst:
-            raise ValueError("law_id 또는 mst 중 하나는 필수입니다.")
-        
-        try:
-            params = {'JO': jo_no}
-            
-            if hang_no:
-                params['HANG'] = hang_no
-            if ho_no:
-                params['HO'] = ho_no
-            if mok:
-                params['MOK'] = quote(mok)  # 한글 인코딩
-            
-            if law_id:
-                params['ID'] = law_id
-            else:
-                params['MST'] = mst
-            
-            logger.info(f"조문 검색 - 법령: {law_id or mst}, 조: {jo_no}")
-            
-            result = self.client.get_detail(
-                target=self.TARGETS['LAW_JOSUB'],
-                id=law_id or mst,
-                **params
-            )
-            
-            return self._parse_article_detail(result)
-            
-        except Exception as e:
-            logger.error(f"조문 검색 실패: {str(e)}")
-            return {'error': str(e)}
-    
-    # ==================== 4. 시행일 법령 검색 ====================
+    # ==================== 3. 시행일 법령 목록 조회 API ====================
     
     def search_effective_laws(self,
                              query: str = "",
-                             nw: Optional[List[int]] = None,
-                             law_id: Optional[str] = None,
+                             output_type: str = "JSON",
+                             search_type: int = 1,
+                             nw: Optional[str] = None,
+                             lid: Optional[str] = None,
                              display: int = 20,
                              page: int = 1,
-                             date: Optional[str] = None) -> Dict[str, Any]:
+                             sort: str = "lasc",
+                             ef_yd: Optional[str] = None,
+                             date: Optional[str] = None,
+                             anc_yd: Optional[str] = None,
+                             anc_no: Optional[str] = None,
+                             rr_cls_cd: Optional[str] = None,
+                             nb: Optional[int] = None,
+                             org: Optional[str] = None,
+                             knd: Optional[str] = None,
+                             gana: Optional[str] = None,
+                             pop_yn: Optional[str] = None) -> Dict[str, Any]:
         """
-        시행일 기준 법령을 검색합니다.
+        시행일 법령 목록을 조회합니다. (API #3)
         
         Args:
             query: 검색어
-            nw: 검색 범위 ([1]: 연혁, [2]: 시행예정, [3]: 현행)
-            law_id: 특정 법령 ID로 검색
-            display: 결과 개수
-            page: 페이지
-            date: 시행일자
+            output_type: 출력형태
+            search_type: 검색범위 (1: 법령명, 2: 본문검색)
+            nw: 검색 범위 (1: 연혁, 2: 시행예정, 3: 현행, 쉼표로 구분)
+            lid: 법령 ID
+            기타 파라미터는 search_laws와 동일
         
         Returns:
             시행일 법령 검색 결과
         """
         try:
             params = {
+                'target': self.TARGETS['EFLAW'],
+                'type': output_type,
+                'search': search_type,
+                'query': query,
                 'display': min(display, 100),
-                'page': page
+                'page': page,
+                'sort': sort
             }
             
-            if nw:
-                params['nw'] = ','.join(map(str, nw))
-            if law_id:
-                params['LID'] = law_id
-            if date:
-                params['efYd'] = date
+            if nw: params['nw'] = nw
+            if lid: params['LID'] = lid
+            if ef_yd: params['efYd'] = ef_yd
+            if date: params['date'] = date
+            if anc_yd: params['ancYd'] = anc_yd
+            if anc_no: params['ancNo'] = anc_no
+            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
+            if nb: params['nb'] = nb
+            if org: params['org'] = org
+            if knd: params['knd'] = knd
+            if gana: params['gana'] = gana
+            if pop_yn: params['popYn'] = pop_yn
             
             logger.info(f"시행일 법령 검색 - 검색어: {query}")
             
-            result = self.client.search(
-                target=self.TARGETS['EFLAW'],
-                query=query,
-                **params
-            )
-            
-            return self._parse_search_result(result, '시행일법령')
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'eflaw_search')
             
         except Exception as e:
             logger.error(f"시행일 법령 검색 실패: {str(e)}")
             return {'error': str(e), 'results': []}
     
-    # ==================== 5. 법령 연혁 조회 ====================
+    # ==================== 4. 시행일 법령 본문 조회 API ====================
     
-    def get_law_history(self,
-                       query: Optional[str] = None,
-                       law_id: Optional[str] = None,
-                       mst: Optional[str] = None,
-                       display: int = 20,
-                       page: int = 1) -> Dict[str, Any]:
+    def get_effective_law_detail(self,
+                                law_id: Optional[str] = None,
+                                mst: Optional[str] = None,
+                                ef_yd: int = None,
+                                output_type: str = "JSON",
+                                jo: Optional[int] = None,
+                                chr_cls_cd: Optional[str] = None) -> Dict[str, Any]:
         """
-        법령의 제개정 연혁을 조회합니다.
+        시행일 법령 본문을 조회합니다. (API #4)
         
         Args:
-            query: 법령명 검색어
-            law_id: 법령 ID (상세 조회시)
-            mst: 법령 마스터 번호 (상세 조회시)
-            display: 결과 개수
-            page: 페이지
+            law_id: 법령 ID
+            mst: 법령 마스터 번호
+            ef_yd: 시행일자 (MST 사용시 필수)
+            output_type: 출력형태
+            jo: 조번호
+            chr_cls_cd: 원문/한글 여부 (010202: 한글, 010201: 원문)
         
         Returns:
-            법령 연혁 정보
-        
-        Example:
-            >>> history = searcher.get_law_history(query="도로교통법")
-            >>> for item in history['results']:
-            >>>     print(f"{item['공포일자']}: {item['제개정구분명']}")
+            시행일 법령 상세 정보
         """
+        if not law_id and not mst:
+            raise ValueError("law_id 또는 mst 중 하나는 필수입니다.")
+        
         try:
-            # 목록 조회
-            if query and not law_id and not mst:
-                params = {
-                    'display': min(display, 100),
-                    'page': page
-                }
-                
-                logger.info(f"법령 연혁 목록 검색 - 검색어: {query}")
-                
-                result = self.client.search(
-                    target=self.TARGETS['LS_HISTORY'],
-                    query=query,
-                    **params
-                )
-                
-                return self._parse_search_result(result, '법령연혁')
+            params = {
+                'target': self.TARGETS['EFLAW'],
+                'type': output_type
+            }
             
-            # 상세 조회
-            elif law_id or mst:
-                params = {}
-                if law_id:
-                    params['ID'] = law_id
-                else:
-                    params['MST'] = mst
-                
-                logger.info(f"법령 연혁 상세 조회 - ID: {law_id or mst}")
-                
-                result = self.client.get_detail(
-                    target=self.TARGETS['LS_HISTORY'],
-                    id=law_id or mst,
-                    **params
-                )
-                
-                return self._parse_history_detail(result)
+            if law_id: params['ID'] = law_id
+            if mst: 
+                params['MST'] = mst
+                if ef_yd: params['efYd'] = ef_yd
+            if jo: params['JO'] = jo
+            if chr_cls_cd: params['chrClsCd'] = chr_cls_cd
             
-            else:
-                raise ValueError("query 또는 law_id/mst가 필요합니다.")
-                
+            logger.info(f"시행일 법령 상세 조회 - ID: {law_id or mst}")
+            
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'eflaw_detail')
+            
         except Exception as e:
-            logger.error(f"법령 연혁 조회 실패: {str(e)}")
+            logger.error(f"시행일 법령 상세 조회 실패: {str(e)}")
             return {'error': str(e)}
     
-    # ==================== 6. 신구법 비교 ====================
+    # ==================== 5. 법령 연혁 목록 조회 API ====================
     
-    def compare_old_new(self,
-                       query: Optional[str] = None,
-                       law_id: Optional[str] = None,
-                       mst: Optional[str] = None) -> Dict[str, Any]:
+    def search_law_history(self,
+                          query: str = "",
+                          output_type: str = "HTML",
+                          display: int = 20,
+                          page: int = 1,
+                          sort: str = "lasc",
+                          ef_yd: Optional[str] = None,
+                          date: Optional[str] = None,
+                          anc_yd: Optional[str] = None,
+                          anc_no: Optional[str] = None,
+                          rr_cls_cd: Optional[str] = None,
+                          org: Optional[str] = None,
+                          knd: Optional[str] = None,
+                          ls_chap_no: Optional[str] = None,
+                          gana: Optional[str] = None,
+                          pop_yn: Optional[str] = None) -> Dict[str, Any]:
         """
-        법령의 신구 조문을 비교합니다.
+        법령 연혁 목록을 조회합니다. (API #5)
         
         Args:
-            query: 법령명 검색어 (목록 조회시)
-            law_id: 법령 ID (상세 조회시)
-            mst: 법령 마스터 번호 (상세 조회시)
+            query: 검색어
+            output_type: 출력형태 (HTML만 지원)
+            기타 파라미터는 search_laws와 동일
         
         Returns:
-            신구법 비교 정보
-        
-        Example:
-            >>> comparison = searcher.compare_old_new(law_id="000170")
-            >>> print(comparison['구조문'], comparison['신조문'])
+            법령 연혁 목록
         """
         try:
-            # 목록 조회
-            if query and not law_id and not mst:
-                logger.info(f"신구법 목록 검색 - 검색어: {query}")
-                
-                result = self.client.search(
-                    target=self.TARGETS['OLD_AND_NEW'],
-                    query=query
-                )
-                
-                return self._parse_search_result(result, '신구법')
+            params = {
+                'target': self.TARGETS['LS_HISTORY'],
+                'type': output_type,
+                'query': query,
+                'display': min(display, 100),
+                'page': page,
+                'sort': sort
+            }
             
-            # 상세 조회
-            elif law_id or mst:
-                params = {}
-                if law_id:
-                    params['ID'] = law_id
-                else:
-                    params['MST'] = mst
-                
-                logger.info(f"신구법 상세 조회 - ID: {law_id or mst}")
-                
-                result = self.client.get_detail(
-                    target=self.TARGETS['OLD_AND_NEW'],
-                    id=law_id or mst,
-                    **params
-                )
-                
-                return self._parse_old_new_detail(result)
+            if ef_yd: params['efYd'] = ef_yd
+            if date: params['date'] = date
+            if anc_yd: params['ancYd'] = anc_yd
+            if anc_no: params['ancNo'] = anc_no
+            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
+            if org: params['org'] = org
+            if knd: params['knd'] = knd
+            if ls_chap_no: params['lsChapNo'] = ls_chap_no
+            if gana: params['gana'] = gana
+            if pop_yn: params['popYn'] = pop_yn
             
-            else:
-                raise ValueError("query 또는 law_id/mst가 필요합니다.")
-                
+            logger.info(f"법령 연혁 목록 검색 - 검색어: {query}")
+            
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'history_search')
+            
         except Exception as e:
-            logger.error(f"신구법 비교 실패: {str(e)}")
+            logger.error(f"법령 연혁 목록 검색 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
+    
+    # ==================== 6. 법령 연혁 본문 조회 API ====================
+    
+    def get_law_history_detail(self,
+                              law_id: Optional[str] = None,
+                              mst: Optional[str] = None,
+                              output_type: str = "HTML",
+                              lm: Optional[str] = None,
+                              ld: Optional[int] = None,
+                              ln: Optional[int] = None,
+                              chr_cls_cd: Optional[str] = None) -> Dict[str, Any]:
+        """
+        법령 연혁 본문을 조회합니다. (API #6)
+        
+        Args:
+            law_id: 법령 ID
+            mst: 법령 마스터 번호
+            output_type: 출력형태 (HTML만 지원)
+            lm: 법령명
+            ld: 공포일자
+            ln: 공포번호
+            chr_cls_cd: 원문/한글 여부
+        
+        Returns:
+            법령 연혁 상세
+        """
+        if not law_id and not mst:
+            raise ValueError("law_id 또는 mst 중 하나는 필수입니다.")
+        
+        try:
+            params = {
+                'target': self.TARGETS['LS_HISTORY'],
+                'type': output_type
+            }
+            
+            if law_id: params['ID'] = law_id
+            if mst: params['MST'] = mst
+            if lm: params['LM'] = lm
+            if ld: params['LD'] = ld
+            if ln: params['LN'] = ln
+            if chr_cls_cd: params['chrClsCd'] = chr_cls_cd
+            
+            logger.info(f"법령 연혁 상세 조회 - ID: {law_id or mst}")
+            
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'history_detail')
+            
+        except Exception as e:
+            logger.error(f"법령 연혁 상세 조회 실패: {str(e)}")
             return {'error': str(e)}
     
-    # ==================== 7. 영문법령 검색 ====================
+    # ==================== 7. 현행법령 본문 조항호목 조회 API ====================
+    
+    def get_law_article_detail(self,
+                              law_id: Optional[str] = None,
+                              mst: Optional[str] = None,
+                              jo: str = None,
+                              hang: Optional[str] = None,
+                              ho: Optional[str] = None,
+                              mok: Optional[str] = None,
+                              output_type: str = "JSON") -> Dict[str, Any]:
+        """
+        현행법령의 조항호목을 조회합니다. (API #7)
+        
+        Args:
+            law_id: 법령 ID
+            mst: 법령 마스터 번호
+            jo: 조번호 (6자리, 필수) 예: '000300' (제3조)
+            hang: 항번호 (6자리) 예: '000100' (제1항)
+            ho: 호번호 (6자리) 예: '000200' (제2호)
+            mok: 목 (한글자) 예: '가', '나', '다'
+            output_type: 출력형태
+        
+        Returns:
+            조항호목 상세
+        """
+        if not law_id and not mst:
+            raise ValueError("law_id 또는 mst 중 하나는 필수입니다.")
+        if not jo:
+            raise ValueError("조번호(jo)는 필수입니다.")
+        
+        try:
+            params = {
+                'target': self.TARGETS['LAW_JOSUB'],
+                'type': output_type,
+                'JO': jo
+            }
+            
+            if law_id: params['ID'] = law_id
+            if mst: params['MST'] = mst
+            if hang: params['HANG'] = hang
+            if ho: params['HO'] = ho
+            if mok: params['MOK'] = quote(mok)  # 한글 인코딩
+            
+            logger.info(f"조항호목 조회 - 법령: {law_id or mst}, 조: {jo}")
+            
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'article_detail')
+            
+        except Exception as e:
+            logger.error(f"조항호목 조회 실패: {str(e)}")
+            return {'error': str(e)}
+    
+    # ==================== 8. 시행일법령 본문 조항호목 조회 API ====================
+    
+    def get_effective_law_article_detail(self,
+                                        law_id: Optional[str] = None,
+                                        mst: Optional[str] = None,
+                                        ef_yd: int = None,
+                                        jo: str = None,
+                                        hang: Optional[str] = None,
+                                        ho: Optional[str] = None,
+                                        mok: Optional[str] = None,
+                                        output_type: str = "JSON") -> Dict[str, Any]:
+        """
+        시행일법령의 조항호목을 조회합니다. (API #8)
+        
+        Args:
+            law_id: 법령 ID
+            mst: 법령 마스터 번호
+            ef_yd: 시행일자 (MST 사용시 필수)
+            jo: 조번호 (필수)
+            hang: 항번호
+            ho: 호번호
+            mok: 목
+            output_type: 출력형태
+        
+        Returns:
+            시행일법령 조항호목 상세
+        """
+        if not law_id and not mst:
+            raise ValueError("law_id 또는 mst 중 하나는 필수입니다.")
+        if not jo:
+            raise ValueError("조번호(jo)는 필수입니다.")
+        
+        try:
+            params = {
+                'target': self.TARGETS['EFLAW_JOSUB'],
+                'type': output_type,
+                'JO': jo
+            }
+            
+            if law_id: params['ID'] = law_id
+            if mst: 
+                params['MST'] = mst
+                if ef_yd: params['efYd'] = ef_yd
+            if hang: params['HANG'] = hang
+            if ho: params['HO'] = ho
+            if mok: params['MOK'] = quote(mok)
+            
+            logger.info(f"시행일법령 조항호목 조회 - 법령: {law_id or mst}, 조: {jo}")
+            
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'eflaw_article_detail')
+            
+        except Exception as e:
+            logger.error(f"시행일법령 조항호목 조회 실패: {str(e)}")
+            return {'error': str(e)}
+    
+    # ==================== 9. 영문법령 목록 조회 API ====================
     
     def search_english_laws(self,
-                           query: str = "",
+                           query: str = "*",
+                           search_type: int = 1,
+                           output_type: str = "JSON",
                            display: int = 20,
-                           page: int = 1) -> Dict[str, Any]:
+                           page: int = 1,
+                           sort: str = "lasc",
+                           date: Optional[int] = None,
+                           ef_yd: Optional[str] = None,
+                           anc_yd: Optional[str] = None,
+                           anc_no: Optional[str] = None,
+                           rr_cls_cd: Optional[str] = None,
+                           nb: Optional[int] = None,
+                           org: Optional[str] = None,
+                           knd: Optional[str] = None,
+                           gana: Optional[str] = None,
+                           pop_yn: Optional[str] = None) -> Dict[str, Any]:
         """
-        영문 법령을 검색합니다.
+        영문법령을 검색합니다. (API #9)
         
         Args:
-            query: 검색어 (한글 또는 영문)
-            display: 결과 개수
-            page: 페이지
+            query: 검색어 (기본값 '*' - 전체)
+            search_type: 검색범위
+            output_type: 출력형태
+            기타 파라미터는 search_laws와 동일
         
         Returns:
             영문법령 검색 결과
         """
         try:
             params = {
+                'target': self.TARGETS['ELAW'],
+                'type': output_type,
+                'search': search_type,
+                'query': query,
                 'display': min(display, 100),
-                'page': page
+                'page': page,
+                'sort': sort
             }
+            
+            if date: params['date'] = date
+            if ef_yd: params['efYd'] = ef_yd
+            if anc_yd: params['ancYd'] = anc_yd
+            if anc_no: params['ancNo'] = anc_no
+            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
+            if nb: params['nb'] = nb
+            if org: params['org'] = org
+            if knd: params['knd'] = knd
+            if gana: params['gana'] = gana
+            if pop_yn: params['popYn'] = pop_yn
             
             logger.info(f"영문법령 검색 - 검색어: {query}")
             
-            result = self.client.search(
-                target=self.TARGETS['ELAW'],
-                query=query,
-                **params
-            )
-            
-            return self._parse_search_result(result, '영문법령')
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'elaw_search')
             
         except Exception as e:
             logger.error(f"영문법령 검색 실패: {str(e)}")
             return {'error': str(e), 'results': []}
     
-    # ==================== 8. 법령 체계도 조회 ====================
+    # ==================== 10. 영문법령 본문 조회 API ====================
     
-    def get_law_structure(self,
-                         query: Optional[str] = None,
-                         law_id: Optional[str] = None,
-                         mst: Optional[str] = None) -> Dict[str, Any]:
+    def get_english_law_detail(self,
+                              law_id: Optional[str] = None,
+                              mst: Optional[str] = None,
+                              output_type: str = "JSON",
+                              lm: Optional[str] = None,
+                              ld: Optional[int] = None,
+                              ln: Optional[int] = None) -> Dict[str, Any]:
         """
-        법령의 체계도(상하위 법령 관계)를 조회합니다.
+        영문법령 본문을 조회합니다. (API #10)
         
         Args:
-            query: 법령명 검색어
             law_id: 법령 ID
             mst: 법령 마스터 번호
+            output_type: 출력형태
+            lm: 법령명
+            ld: 공포일자
+            ln: 공포번호
         
         Returns:
-            법령 체계도 정보
+            영문법령 상세
         """
+        if not law_id and not mst:
+            raise ValueError("law_id 또는 mst 중 하나는 필수입니다.")
+        
         try:
-            if query and not law_id and not mst:
-                logger.info(f"법령 체계도 목록 검색 - 검색어: {query}")
-                
-                result = self.client.search(
-                    target=self.TARGETS['LS_STMD'],
-                    query=query
-                )
-                
-                return self._parse_search_result(result, '법령체계도')
+            params = {
+                'target': self.TARGETS['ELAW'],
+                'type': output_type
+            }
             
-            elif law_id or mst:
-                params = {}
-                if law_id:
-                    params['ID'] = law_id
-                else:
-                    params['MST'] = mst
-                
-                logger.info(f"법령 체계도 상세 조회 - ID: {law_id or mst}")
-                
-                result = self.client.get_detail(
-                    target=self.TARGETS['LS_STMD'],
-                    id=law_id or mst,
-                    **params
-                )
-                
-                return self._parse_structure_detail(result)
+            if law_id: params['ID'] = law_id
+            if mst: params['MST'] = mst
+            if lm: params['LM'] = lm
+            if ld: params['LD'] = ld
+            if ln: params['LN'] = ln
             
-            else:
-                raise ValueError("query 또는 law_id/mst가 필요합니다.")
-                
+            logger.info(f"영문법령 상세 조회 - ID: {law_id or mst}")
+            
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'elaw_detail')
+            
         except Exception as e:
-            logger.error(f"법령 체계도 조회 실패: {str(e)}")
+            logger.error(f"영문법령 상세 조회 실패: {str(e)}")
             return {'error': str(e)}
     
-    # ==================== 9. 3단 비교 조회 ====================
+    # ==================== 11. 법령 변경이력 목록 조회 API ====================
     
-    def get_three_way_comparison(self,
-                                 query: Optional[str] = None,
-                                 law_id: Optional[str] = None,
-                                 mst: Optional[str] = None,
-                                 kind: int = 1) -> Dict[str, Any]:
+    def search_law_change_history(self,
+                                 reg_dt: int = None,
+                                 org: Optional[str] = None,
+                                 output_type: str = "JSON",
+                                 display: int = 20,
+                                 page: int = 1,
+                                 pop_yn: Optional[str] = None) -> Dict[str, Any]:
         """
-        법령의 3단 비교(법률-시행령-시행규칙)를 조회합니다.
+        법령 변경이력 목록을 조회합니다. (API #11)
         
         Args:
-            query: 법령명 검색어
-            law_id: 법령 ID
-            mst: 법령 마스터 번호
-            kind: 비교 종류 (1: 인용조문, 2: 위임조문)
+            reg_dt: 법령 변경일 (YYYYMMDD, 필수)
+            org: 소관부처 코드
+            output_type: 출력형태
+            display: 결과 개수
+            page: 페이지
+            pop_yn: 팝업창 여부
         
         Returns:
-            3단 비교 정보
+            법령 변경이력 목록
+        """
+        if not reg_dt:
+            raise ValueError("reg_dt(법령 변경일)는 필수입니다.")
+        
+        try:
+            params = {
+                'target': self.TARGETS['LS_HST_INF'],
+                'type': output_type,
+                'regDt': reg_dt,
+                'display': min(display, 100),
+                'page': page
+            }
+            
+            if org: params['org'] = org
+            if pop_yn: params['popYn'] = pop_yn
+            
+            logger.info(f"법령 변경이력 조회 - 날짜: {reg_dt}")
+            
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'change_history')
+            
+        except Exception as e:
+            logger.error(f"법령 변경이력 조회 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
+    
+    # ==================== 12. 일자별 조문 개정 이력 목록 조회 API ====================
+    
+    def search_article_revision_history(self,
+                                       reg_dt: Optional[int] = None,
+                                       from_reg_dt: Optional[int] = None,
+                                       to_reg_dt: Optional[int] = None,
+                                       law_id: Optional[int] = None,
+                                       jo: Optional[int] = None,
+                                       org: Optional[str] = None,
+                                       output_type: str = "JSON",
+                                       page: int = 1) -> Dict[str, Any]:
+        """
+        일자별 조문 개정 이력을 조회합니다. (API #12)
+        
+        Args:
+            reg_dt: 조문 개정일 (YYYYMMDD)
+            from_reg_dt: 조회기간 시작일
+            to_reg_dt: 조회기간 종료일
+            law_id: 법령 ID
+            jo: 조문번호 (6자리)
+            org: 소관부처 코드
+            output_type: 출력형태
+            page: 페이지
+        
+        Returns:
+            조문 개정 이력
         """
         try:
-            if query and not law_id and not mst:
-                logger.info(f"3단 비교 목록 검색 - 검색어: {query}")
-                
-                result = self.client.search(
-                    target=self.TARGETS['THD_CMP'],
-                    query=query
-                )
-                
-                return self._parse_search_result(result, '3단비교')
+            params = {
+                'target': self.TARGETS['LS_JO_HST_INF'],
+                'type': output_type,
+                'page': page
+            }
             
-            elif law_id or mst:
-                params = {'knd': kind}
-                if law_id:
-                    params['ID'] = law_id
-                else:
-                    params['MST'] = mst
-                
-                logger.info(f"3단 비교 상세 조회 - ID: {law_id or mst}, 종류: {kind}")
-                
-                result = self.client.get_detail(
-                    target=self.TARGETS['THD_CMP'],
-                    id=law_id or mst,
-                    **params
-                )
-                
-                return self._parse_three_way_detail(result, kind)
+            if reg_dt: params['regDt'] = reg_dt
+            if from_reg_dt: params['fromRegDt'] = from_reg_dt
+            if to_reg_dt: params['toRegDt'] = to_reg_dt
+            if law_id: params['ID'] = law_id
+            if jo: params['JO'] = jo
+            if org: params['org'] = org
             
-            else:
-                raise ValueError("query 또는 law_id/mst가 필요합니다.")
-                
+            logger.info(f"조문 개정 이력 조회 - 법령: {law_id}, 조: {jo}")
+            
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'article_revision')
+            
         except Exception as e:
-            logger.error(f"3단 비교 조회 실패: {str(e)}")
+            logger.error(f"조문 개정 이력 조회 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
+    
+    # ==================== 13. 조문별 변경 이력 목록 조회 API ====================
+    
+    def get_article_change_history(self,
+                                  law_id: str,
+                                  jo: int,
+                                  output_type: str = "JSON",
+                                  display: int = 20,
+                                  page: int = 1) -> Dict[str, Any]:
+        """
+        조문별 변경 이력을 조회합니다. (API #13)
+        
+        Args:
+            law_id: 법령 ID (필수)
+            jo: 조번호 (6자리, 필수)
+            output_type: 출력형태
+            display: 결과 개수
+            page: 페이지
+        
+        Returns:
+            조문별 변경 이력
+        """
+        try:
+            params = {
+                'target': self.TARGETS['LS_JO_HST_INF'],
+                'type': output_type,
+                'ID': law_id,
+                'JO': jo,
+                'display': min(display, 100),
+                'page': page
+            }
+            
+            logger.info(f"조문별 변경 이력 조회 - 법령: {law_id}, 조: {jo}")
+            
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'article_change')
+            
+        except Exception as e:
+            logger.error(f"조문별 변경 이력 조회 실패: {str(e)}")
             return {'error': str(e)}
     
-    # ==================== 10. 위임 법령 조회 ====================
+    # ==================== 14. 법령 자치법규 연계 목록 조회 API ====================
+    
+    def search_linked_ordinances(self,
+                                query: str = "",
+                                output_type: str = "JSON",
+                                display: int = 20,
+                                page: int = 1,
+                                sort: str = "lasc",
+                                pop_yn: Optional[str] = None) -> Dict[str, Any]:
+        """
+        법령-자치법규 연계 목록을 조회합니다. (API #14)
+        
+        Args:
+            query: 검색어
+            output_type: 출력형태
+            display: 결과 개수
+            page: 페이지
+            sort: 정렬옵션
+            pop_yn: 팝업창 여부
+        
+        Returns:
+            연계 법령 목록
+        """
+        try:
+            params = {
+                'target': self.TARGETS['LNK_LS'],
+                'type': output_type,
+                'query': query,
+                'display': min(display, 100),
+                'page': page,
+                'sort': sort
+            }
+            
+            if pop_yn: params['popYn'] = pop_yn
+            
+            logger.info(f"법령-자치법규 연계 검색 - 검색어: {query}")
+            
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'linked_ordinances')
+            
+        except Exception as e:
+            logger.error(f"연계 법령 검색 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
+    
+    # ==================== 15. 연계 법령별 조례 조문 목록 조회 API ====================
+    
+    def search_ordinance_articles(self,
+                                 query: str = "",
+                                 knd: Optional[str] = None,
+                                 jo: Optional[int] = None,
+                                 jobr: Optional[int] = None,
+                                 output_type: str = "JSON",
+                                 display: int = 20,
+                                 page: int = 1,
+                                 sort: str = "lasc",
+                                 pop_yn: Optional[str] = None) -> Dict[str, Any]:
+        """
+        연계 법령별 조례 조문 목록을 조회합니다. (API #15)
+        
+        Args:
+            query: 검색어
+            knd: 법령종류 코드
+            jo: 조번호 (4자리)
+            jobr: 조가지번호 (2자리)
+            output_type: 출력형태
+            display: 결과 개수
+            page: 페이지
+            sort: 정렬옵션
+            pop_yn: 팝업창 여부
+        
+        Returns:
+            조례 조문 목록
+        """
+        try:
+            params = {
+                'target': self.TARGETS['LNK_LS_ORD_JO'],
+                'type': output_type,
+                'query': query,
+                'display': min(display, 100),
+                'page': page,
+                'sort': sort
+            }
+            
+            if knd: params['knd'] = knd
+            if jo: params['JO'] = jo
+            if jobr: params['JOBR'] = jobr
+            if pop_yn: params['popYn'] = pop_yn
+            
+            logger.info(f"조례 조문 검색 - 검색어: {query}")
+            
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'ordinance_articles')
+            
+        except Exception as e:
+            logger.error(f"조례 조문 검색 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
+    
+    # ==================== 16. 연계 법령 소관부처별 목록 조회 API ====================
+    
+    def search_linked_by_department(self,
+                                   org: str,
+                                   output_type: str = "JSON",
+                                   display: int = 20,
+                                   page: int = 1,
+                                   sort: str = "lasc",
+                                   pop_yn: Optional[str] = None) -> Dict[str, Any]:
+        """
+        소관부처별 연계 법령을 조회합니다. (API #16)
+        
+        Args:
+            org: 소관부처 코드 (필수)
+            output_type: 출력형태
+            display: 결과 개수
+            page: 페이지
+            sort: 정렬옵션
+            pop_yn: 팝업창 여부
+        
+        Returns:
+            소관부처별 연계 법령
+        """
+        try:
+            params = {
+                'target': self.TARGETS['LNK_DEP'],
+                'type': output_type,
+                'org': org,
+                'display': min(display, 100),
+                'page': page,
+                'sort': sort
+            }
+            
+            if pop_yn: params['popYn'] = pop_yn
+            
+            logger.info(f"소관부처별 연계 법령 조회 - 부처: {org}")
+            
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'linked_by_dept')
+            
+        except Exception as e:
+            logger.error(f"소관부처별 연계 법령 조회 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
+    
+    # ==================== 17. 법령-자치법규 연계현황 조회 API ====================
+    
+    def get_ordinance_link_status(self, output_type: str = "HTML") -> Dict[str, Any]:
+        """
+        법령-자치법규 연계현황을 조회합니다. (API #17)
+        
+        Args:
+            output_type: 출력형태 (HTML만 지원)
+        
+        Returns:
+            연계현황
+        """
+        try:
+            params = {
+                'target': self.TARGETS['DR_LAW'],
+                'type': output_type
+            }
+            
+            logger.info("법령-자치법규 연계현황 조회")
+            
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'link_status')
+            
+        except Exception as e:
+            logger.error(f"연계현황 조회 실패: {str(e)}")
+            return {'error': str(e)}
+    
+    # ==================== 18. 위임 법령 조회 API ====================
     
     def get_delegated_laws(self,
                           law_id: Optional[str] = None,
-                          mst: Optional[str] = None) -> Dict[str, Any]:
+                          mst: Optional[str] = None,
+                          output_type: str = "JSON") -> Dict[str, Any]:
         """
-        특정 법령이 위임한 하위 법령을 조회합니다.
+        위임 법령을 조회합니다. (API #18)
         
         Args:
             law_id: 법령 ID
             mst: 법령 마스터 번호
+            output_type: 출력형태
         
         Returns:
             위임 법령 정보
@@ -618,539 +1078,668 @@ class LawSearcher:
             raise ValueError("law_id 또는 mst 중 하나는 필수입니다.")
         
         try:
-            params = {}
-            if law_id:
-                params['ID'] = law_id
-            else:
-                params['MST'] = mst
+            params = {
+                'target': self.TARGETS['LS_DELEGATED'],
+                'type': output_type
+            }
+            
+            if law_id: params['ID'] = law_id
+            if mst: params['MST'] = mst
             
             logger.info(f"위임 법령 조회 - ID: {law_id or mst}")
             
-            result = self.client.get_detail(
-                target=self.TARGETS['LS_DELEGATED'],
-                id=law_id or mst,
-                **params
-            )
-            
-            return self._parse_delegated_detail(result)
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'delegated_laws')
             
         except Exception as e:
             logger.error(f"위임 법령 조회 실패: {str(e)}")
             return {'error': str(e)}
     
-    # ==================== 11. 조문 변경 이력 조회 ====================
+    # ==================== 19. 법령 체계도 목록 조회 API ====================
     
-    def get_article_history(self,
-                           law_id: str,
-                           jo_no: str,
-                           reg_date: Optional[str] = None,
-                           date_range: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    def search_law_structure(self,
+                            query: str = "",
+                            output_type: str = "JSON",
+                            display: int = 20,
+                            page: int = 1,
+                            sort: str = "lasc",
+                            ef_yd: Optional[str] = None,
+                            anc_yd: Optional[str] = None,
+                            date: Optional[int] = None,
+                            nb: Optional[int] = None,
+                            anc_no: Optional[str] = None,
+                            rr_cls_cd: Optional[str] = None,
+                            org: Optional[str] = None,
+                            knd: Optional[str] = None,
+                            gana: Optional[str] = None,
+                            pop_yn: Optional[str] = None) -> Dict[str, Any]:
         """
-        특정 조문의 변경 이력을 조회합니다.
+        법령 체계도 목록을 조회합니다. (API #19)
+        
+        Args:
+            query: 검색어
+            output_type: 출력형태
+            기타 파라미터는 search_laws와 동일
+        
+        Returns:
+            법령 체계도 목록
+        """
+        try:
+            params = {
+                'target': self.TARGETS['LS_STMD'],
+                'type': output_type,
+                'query': query,
+                'display': min(display, 100),
+                'page': page,
+                'sort': sort
+            }
+            
+            if ef_yd: params['efYd'] = ef_yd
+            if anc_yd: params['ancYd'] = anc_yd
+            if date: params['date'] = date
+            if nb: params['nb'] = nb
+            if anc_no: params['ancNo'] = anc_no
+            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
+            if org: params['org'] = org
+            if knd: params['knd'] = knd
+            if gana: params['gana'] = gana
+            if pop_yn: params['popYn'] = pop_yn
+            
+            logger.info(f"법령 체계도 목록 검색 - 검색어: {query}")
+            
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'structure_search')
+            
+        except Exception as e:
+            logger.error(f"법령 체계도 목록 검색 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
+    
+    # ==================== 20. 법령 체계도 본문 조회 API ====================
+    
+    def get_law_structure_detail(self,
+                                law_id: Optional[str] = None,
+                                mst: Optional[str] = None,
+                                output_type: str = "JSON",
+                                lm: Optional[str] = None,
+                                ld: Optional[int] = None,
+                                ln: Optional[int] = None) -> Dict[str, Any]:
+        """
+        법령 체계도 본문을 조회합니다. (API #20)
         
         Args:
             law_id: 법령 ID
-            jo_no: 조번호 (6자리)
-            reg_date: 특정 날짜의 변경 이력
-            date_range: 기간 검색 {'from': '20150201', 'to': '20150228'}
+            mst: 법령 마스터 번호
+            output_type: 출력형태
+            lm: 법령명
+            ld: 공포일자
+            ln: 공포번호
         
         Returns:
-            조문 변경 이력
+            법령 체계도 상세
         """
+        if not law_id and not mst:
+            raise ValueError("law_id 또는 mst 중 하나는 필수입니다.")
+        
         try:
-            # 날짜별 조회
-            if reg_date or date_range:
-                params = {}
-                if reg_date:
-                    params['regDt'] = reg_date
-                if date_range:
-                    if 'from' in date_range:
-                        params['fromRegDt'] = date_range['from']
-                    if 'to' in date_range:
-                        params['toRegDt'] = date_range['to']
-                if law_id:
-                    params['ID'] = law_id
-                if jo_no:
-                    params['JO'] = jo_no
-                
-                logger.info(f"조문 변경 이력 날짜별 조회 - 법령: {law_id}, 조: {jo_no}")
-                
-                result = self.client.search(
-                    target=self.TARGETS['LS_JO_HST_INF'],
-                    query="",
-                    **params
-                )
-                
-                return self._parse_article_history(result)
+            params = {
+                'target': self.TARGETS['LS_STMD'],
+                'type': output_type
+            }
             
-            # 조문별 조회
-            else:
-                params = {
-                    'ID': law_id,
-                    'JO': jo_no
-                }
-                
-                logger.info(f"조문 변경 이력 조회 - 법령: {law_id}, 조: {jo_no}")
-                
-                result = self.client.get_detail(
-                    target=self.TARGETS['LS_JO_HST_INF'],
-                    id=law_id,
-                    **params
-                )
-                
-                return self._parse_article_history_detail(result)
-                
+            if law_id: params['ID'] = law_id
+            if mst: params['MST'] = mst
+            if lm: params['LM'] = lm
+            if ld: params['LD'] = ld
+            if ln: params['LN'] = ln
+            
+            logger.info(f"법령 체계도 상세 조회 - ID: {law_id or mst}")
+            
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'structure_detail')
+            
         except Exception as e:
-            logger.error(f"조문 변경 이력 조회 실패: {str(e)}")
+            logger.error(f"법령 체계도 상세 조회 실패: {str(e)}")
             return {'error': str(e)}
     
-    # ==================== 12. 법령 약칭 조회 ====================
+    # ==================== 21. 신구법 목록 조회 API ====================
     
-    def get_law_abbreviations(self,
-                             start_date: Optional[str] = None,
-                             end_date: Optional[str] = None) -> Dict[str, Any]:
+    def search_old_new_laws(self,
+                           query: str = "",
+                           output_type: str = "JSON",
+                           display: int = 20,
+                           page: int = 1,
+                           sort: str = "lasc",
+                           ef_yd: Optional[str] = None,
+                           anc_yd: Optional[str] = None,
+                           date: Optional[int] = None,
+                           nb: Optional[int] = None,
+                           anc_no: Optional[str] = None,
+                           rr_cls_cd: Optional[str] = None,
+                           org: Optional[str] = None,
+                           knd: Optional[str] = None,
+                           gana: Optional[str] = None,
+                           pop_yn: Optional[str] = None) -> Dict[str, Any]:
         """
-        법령명 약칭 목록을 조회합니다.
+        신구법 목록을 조회합니다. (API #21)
         
         Args:
-            start_date: 등록일 시작 (YYYYMMDD)
-            end_date: 등록일 종료 (YYYYMMDD)
+            query: 검색어
+            output_type: 출력형태
+            기타 파라미터는 search_laws와 동일
+        
+        Returns:
+            신구법 목록
+        """
+        try:
+            params = {
+                'target': self.TARGETS['OLD_AND_NEW'],
+                'type': output_type,
+                'query': query,
+                'display': min(display, 100),
+                'page': page,
+                'sort': sort
+            }
+            
+            if ef_yd: params['efYd'] = ef_yd
+            if anc_yd: params['ancYd'] = anc_yd
+            if date: params['date'] = date
+            if nb: params['nb'] = nb
+            if anc_no: params['ancNo'] = anc_no
+            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
+            if org: params['org'] = org
+            if knd: params['knd'] = knd
+            if gana: params['gana'] = gana
+            if pop_yn: params['popYn'] = pop_yn
+            
+            logger.info(f"신구법 목록 검색 - 검색어: {query}")
+            
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'old_new_search')
+            
+        except Exception as e:
+            logger.error(f"신구법 목록 검색 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
+    
+    # ==================== 22. 신구법 본문 조회 API ====================
+    
+    def get_old_new_law_detail(self,
+                              law_id: Optional[str] = None,
+                              mst: Optional[str] = None,
+                              output_type: str = "JSON",
+                              lm: Optional[str] = None,
+                              ld: Optional[int] = None,
+                              ln: Optional[int] = None) -> Dict[str, Any]:
+        """
+        신구법 본문을 조회합니다. (API #22)
+        
+        Args:
+            law_id: 법령 ID
+            mst: 법령 마스터 번호
+            output_type: 출력형태
+            lm: 법령명
+            ld: 공포일자
+            ln: 공포번호
+        
+        Returns:
+            신구법 상세
+        """
+        if not law_id and not mst:
+            raise ValueError("law_id 또는 mst 중 하나는 필수입니다.")
+        
+        try:
+            params = {
+                'target': self.TARGETS['OLD_AND_NEW'],
+                'type': output_type
+            }
+            
+            if law_id: params['ID'] = law_id
+            if mst: params['MST'] = mst
+            if lm: params['LM'] = lm
+            if ld: params['LD'] = ld
+            if ln: params['LN'] = ln
+            
+            logger.info(f"신구법 상세 조회 - ID: {law_id or mst}")
+            
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'old_new_detail')
+            
+        except Exception as e:
+            logger.error(f"신구법 상세 조회 실패: {str(e)}")
+            return {'error': str(e)}
+    
+    # ==================== 23. 3단 비교 목록 조회 API ====================
+    
+    def search_three_way_comparison(self,
+                                   query: str = "",
+                                   output_type: str = "JSON",
+                                   display: int = 20,
+                                   page: int = 1,
+                                   sort: str = "lasc",
+                                   ef_yd: Optional[str] = None,
+                                   anc_yd: Optional[str] = None,
+                                   date: Optional[int] = None,
+                                   nb: Optional[int] = None,
+                                   anc_no: Optional[str] = None,
+                                   rr_cls_cd: Optional[str] = None,
+                                   org: Optional[str] = None,
+                                   knd: Optional[str] = None,
+                                   gana: Optional[str] = None,
+                                   pop_yn: Optional[str] = None) -> Dict[str, Any]:
+        """
+        3단 비교 목록을 조회합니다. (API #23)
+        
+        Args:
+            query: 검색어
+            output_type: 출력형태
+            기타 파라미터는 search_laws와 동일
+        
+        Returns:
+            3단 비교 목록
+        """
+        try:
+            params = {
+                'target': self.TARGETS['THD_CMP'],
+                'type': output_type,
+                'query': query,
+                'display': min(display, 100),
+                'page': page,
+                'sort': sort
+            }
+            
+            if ef_yd: params['efYd'] = ef_yd
+            if anc_yd: params['ancYd'] = anc_yd
+            if date: params['date'] = date
+            if nb: params['nb'] = nb
+            if anc_no: params['ancNo'] = anc_no
+            if rr_cls_cd: params['rrClsCd'] = rr_cls_cd
+            if org: params['org'] = org
+            if knd: params['knd'] = knd
+            if gana: params['gana'] = gana
+            if pop_yn: params['popYn'] = pop_yn
+            
+            logger.info(f"3단 비교 목록 검색 - 검색어: {query}")
+            
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'three_way_search')
+            
+        except Exception as e:
+            logger.error(f"3단 비교 목록 검색 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
+    
+    # ==================== 24. 3단 비교 본문 조회 API ====================
+    
+    def get_three_way_comparison_detail(self,
+                                       law_id: Optional[str] = None,
+                                       mst: Optional[str] = None,
+                                       knd: int = 1,
+                                       output_type: str = "JSON",
+                                       lm: Optional[str] = None,
+                                       ld: Optional[int] = None,
+                                       ln: Optional[int] = None) -> Dict[str, Any]:
+        """
+        3단 비교 본문을 조회합니다. (API #24)
+        
+        Args:
+            law_id: 법령 ID
+            mst: 법령 마스터 번호
+            knd: 3단비교 종류 (1: 인용조문, 2: 위임조문, 필수)
+            output_type: 출력형태
+            lm: 법령명
+            ld: 공포일자
+            ln: 공포번호
+        
+        Returns:
+            3단 비교 상세
+        """
+        if not law_id and not mst:
+            raise ValueError("law_id 또는 mst 중 하나는 필수입니다.")
+        
+        try:
+            params = {
+                'target': self.TARGETS['THD_CMP'],
+                'type': output_type,
+                'knd': knd
+            }
+            
+            if law_id: params['ID'] = law_id
+            if mst: params['MST'] = mst
+            if lm: params['LM'] = lm
+            if ld: params['LD'] = ld
+            if ln: params['LN'] = ln
+            
+            logger.info(f"3단 비교 상세 조회 - ID: {law_id or mst}, 종류: {knd}")
+            
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'three_way_detail')
+            
+        except Exception as e:
+            logger.error(f"3단 비교 상세 조회 실패: {str(e)}")
+            return {'error': str(e)}
+    
+    # ==================== 25. 법령명 약칭 조회 API ====================
+    
+    def search_law_abbreviations(self,
+                                std_dt: Optional[int] = None,
+                                end_dt: Optional[int] = None,
+                                output_type: str = "JSON") -> Dict[str, Any]:
+        """
+        법령명 약칭을 조회합니다. (API #25)
+        
+        Args:
+            std_dt: 등록일 시작
+            end_dt: 등록일 종료
+            output_type: 출력형태
         
         Returns:
             법령 약칭 목록
         """
         try:
-            params = {}
-            if start_date:
-                params['stdDt'] = start_date
-            if end_date:
-                params['endDt'] = end_date
+            params = {
+                'target': self.TARGETS['LS_ABRV'],
+                'type': output_type
+            }
             
-            logger.info("법령 약칭 조회")
+            if std_dt: params['stdDt'] = std_dt
+            if end_dt: params['endDt'] = end_dt
             
-            result = self.client.search(
-                target=self.TARGETS['LS_ABRV'],
-                query="",
-                **params
-            )
+            logger.info("법령명 약칭 조회")
             
-            return self._parse_abbreviations(result)
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'abbreviations')
             
         except Exception as e:
-            logger.error(f"법령 약칭 조회 실패: {str(e)}")
-            return {'error': str(e)}
+            logger.error(f"법령명 약칭 조회 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
     
-    # ==================== 13. 한눈보기 조회 ====================
+    # ==================== 26. 삭제 데이터 목록 조회 API ====================
     
-    def get_oneview(self,
-                   query: Optional[str] = None,
-                   mst: Optional[str] = None,
-                   jo_no: Optional[str] = None) -> Dict[str, Any]:
+    def search_deleted_data(self,
+                           knd: Optional[int] = None,
+                           del_dt: Optional[int] = None,
+                           frm_dt: Optional[int] = None,
+                           to_dt: Optional[int] = None,
+                           output_type: str = "JSON",
+                           display: int = 20,
+                           page: int = 1) -> Dict[str, Any]:
         """
-        법령 한눈보기 정보를 조회합니다.
+        삭제 데이터 목록을 조회합니다. (API #26)
         
         Args:
-            query: 법령명 검색어
-            mst: 법령 마스터 번호
-            jo_no: 조번호
+            knd: 데이터 종류 (1: 법령, 2: 행정규칙, 3: 자치법규, 13: 학칙공단)
+            del_dt: 삭제일자 (YYYYMMDD)
+            frm_dt: 시작일자
+            to_dt: 종료일자
+            output_type: 출력형태
+            display: 결과 개수
+            page: 페이지
         
         Returns:
-            한눈보기 정보
+            삭제 데이터 목록
         """
         try:
-            if query and not mst:
-                logger.info(f"한눈보기 목록 검색 - 검색어: {query}")
-                
-                result = self.client.search(
-                    target=self.TARGETS['ONEVIEW'],
-                    query=query
-                )
-                
-                return self._parse_search_result(result, '한눈보기')
+            params = {
+                'target': self.TARGETS['DEL_HST'],
+                'type': output_type,
+                'display': min(display, 100),
+                'page': page
+            }
             
-            elif mst:
-                params = {'MST': mst}
-                if jo_no:
-                    params['JO'] = jo_no
-                
-                logger.info(f"한눈보기 상세 조회 - MST: {mst}")
-                
-                result = self.client.get_detail(
-                    target=self.TARGETS['ONEVIEW'],
-                    id=mst,
-                    **params
-                )
-                
-                return self._parse_oneview_detail(result)
+            if knd: params['knd'] = knd
+            if del_dt: params['delDt'] = del_dt
+            if frm_dt: params['frmDt'] = frm_dt
+            if to_dt: params['toDt'] = to_dt
             
-            else:
-                raise ValueError("query 또는 mst가 필요합니다.")
-                
-        except Exception as e:
-            logger.error(f"한눈보기 조회 실패: {str(e)}")
-            return {'error': str(e)}
-    
-    # ==================== 파싱 헬퍼 메서드들 ====================
-    
-    def _parse_search_result(self, result: Any, result_type: str) -> Dict[str, Any]:
-        """검색 결과를 파싱하여 정규화된 형태로 반환"""
-        try:
-            if isinstance(result, str):
-                # XML 파싱
-                root = ET.fromstring(result)
-                total_cnt = root.findtext('.//totalCnt', '0')
-                
-                items = []
-                for item in root.findall('.//law') or root.findall('.//item'):
-                    items.append({
-                        '법령일련번호': self._safe_get(item, '법령일련번호'),
-                        '법령명한글': self._safe_get(item, '법령명한글'),
-                        '법령ID': self._safe_get(item, '법령ID'),
-                        '공포일자': self._safe_get(item, '공포일자'),
-                        '공포번호': self._safe_get(item, '공포번호'),
-                        '제개정구분명': self._safe_get(item, '제개정구분명'),
-                        '소관부처명': self._safe_get(item, '소관부처명'),
-                        '시행일자': self._safe_get(item, '시행일자'),
-                        '법령상세링크': self._safe_get(item, '법령상세링크')
-                    })
-                
-                return {
-                    'type': result_type,
-                    'totalCnt': int(total_cnt),
-                    'results': items
-                }
+            logger.info(f"삭제 데이터 조회 - 종류: {knd}, 날짜: {del_dt}")
             
-            elif isinstance(result, dict):
-                # JSON 형태로 이미 파싱된 경우
-                return {
-                    'type': result_type,
-                    'totalCnt': result.get('totalCnt', 0),
-                    'results': result.get('laws', result.get('items', []))
-                }
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'deleted_data')
             
-            else:
-                return {'type': result_type, 'totalCnt': 0, 'results': []}
-                
         except Exception as e:
-            logger.error(f"검색 결과 파싱 실패: {str(e)}")
-            return {'error': f'파싱 실패: {str(e)}', 'results': []}
+            logger.error(f"삭제 데이터 조회 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
     
-    def _parse_law_detail(self, result: Any, include_attachments: bool) -> Dict[str, Any]:
-        """법령 상세 정보를 파싱"""
-        try:
-            if isinstance(result, str):
-                root = ET.fromstring(result)
-                
-                detail = {
-                    '법령ID': self._safe_get(root, './/법령ID'),
-                    '법령명_한글': self._safe_get(root, './/법령명_한글'),
-                    '법령명_한자': self._safe_get(root, './/법령명_한자'),
-                    '공포일자': self._safe_get(root, './/공포일자'),
-                    '공포번호': self._safe_get(root, './/공포번호'),
-                    '시행일자': self._safe_get(root, './/시행일자'),
-                    '소관부처': self._safe_get(root, './/소관부처'),
-                    '제개정구분': self._safe_get(root, './/제개정구분'),
-                    '조문': []
-                }
-                
-                # 조문 파싱
-                for jo in root.findall('.//조문'):
-                    article = {
-                        '조문번호': self._safe_get(jo, '조문번호'),
-                        '조문제목': self._safe_get(jo, '조문제목'),
-                        '조문내용': self._safe_get(jo, '조문내용'),
-                        '항': []
-                    }
-                    
-                    for hang in jo.findall('.//항'):
-                        article['항'].append({
-                            '항번호': self._safe_get(hang, '항번호'),
-                            '항내용': self._safe_get(hang, '항내용')
-                        })
-                    
-                    detail['조문'].append(article)
-                
-                # 별표 파싱 (선택적)
-                if include_attachments:
-                    detail['별표'] = []
-                    for table in root.findall('.//별표'):
-                        detail['별표'].append({
-                            '별표번호': self._safe_get(table, '별표번호'),
-                            '별표제목': self._safe_get(table, '별표제목'),
-                            '별표내용': self._safe_get(table, '별표내용')
-                        })
-                
-                return detail
-            
-            else:
-                return result  # 이미 파싱된 경우
-                
-        except Exception as e:
-            logger.error(f"법령 상세 파싱 실패: {str(e)}")
-            return {'error': f'파싱 실패: {str(e)}'}
+    # ==================== 27. 한눈보기 목록 조회 API ====================
     
-    def _parse_article_detail(self, result: Any) -> Dict[str, Any]:
-        """조문 상세 정보를 파싱"""
-        try:
-            if isinstance(result, str):
-                root = ET.fromstring(result)
-                
-                return {
-                    '법령명_한글': self._safe_get(root, './/법령명_한글'),
-                    '조문번호': self._safe_get(root, './/조문번호'),
-                    '조문제목': self._safe_get(root, './/조문제목'),
-                    '조문내용': self._safe_get(root, './/조문내용'),
-                    '항내용': self._safe_get(root, './/항내용'),
-                    '호내용': self._safe_get(root, './/호내용'),
-                    '목내용': self._safe_get(root, './/목내용')
-                }
-            else:
-                return result
-                
-        except Exception as e:
-            logger.error(f"조문 파싱 실패: {str(e)}")
-            return {'error': f'파싱 실패: {str(e)}'}
-    
-    def _parse_history_detail(self, result: Any) -> Dict[str, Any]:
-        """법령 연혁 상세를 파싱"""
-        try:
-            if isinstance(result, str):
-                # HTML 형태의 연혁 정보 처리
-                return {
-                    'type': '법령연혁',
-                    'html': result  # HTML은 그대로 반환
-                }
-            else:
-                return result
-                
-        except Exception as e:
-            logger.error(f"연혁 파싱 실패: {str(e)}")
-            return {'error': f'파싱 실패: {str(e)}'}
-    
-    def _parse_old_new_detail(self, result: Any) -> Dict[str, Any]:
-        """신구법 비교 상세를 파싱"""
-        try:
-            if isinstance(result, str):
-                root = ET.fromstring(result)
-                
-                return {
-                    '법령명': self._safe_get(root, './/법령명'),
-                    '구조문': self._safe_get(root, './/구조문'),
-                    '신조문': self._safe_get(root, './/신조문'),
-                    '시행일자': self._safe_get(root, './/시행일자')
-                }
-            else:
-                return result
-                
-        except Exception as e:
-            logger.error(f"신구법 파싱 실패: {str(e)}")
-            return {'error': f'파싱 실패: {str(e)}'}
-    
-    def _parse_structure_detail(self, result: Any) -> Dict[str, Any]:
-        """법령 체계도를 파싱"""
-        try:
-            if isinstance(result, str):
-                root = ET.fromstring(result)
-                
-                return {
-                    '법령명': self._safe_get(root, './/법령명'),
-                    '법률': self._safe_get(root, './/법률'),
-                    '시행령': self._safe_get(root, './/시행령'),
-                    '시행규칙': self._safe_get(root, './/시행규칙'),
-                    '상위법': self._safe_get(root, './/상위법'),
-                    '하위법': self._safe_get(root, './/하위법')
-                }
-            else:
-                return result
-                
-        except Exception as e:
-            logger.error(f"체계도 파싱 실패: {str(e)}")
-            return {'error': f'파싱 실패: {str(e)}'}
-    
-    def _parse_three_way_detail(self, result: Any, kind: int) -> Dict[str, Any]:
-        """3단 비교 상세를 파싱"""
-        try:
-            if isinstance(result, str):
-                root = ET.fromstring(result)
-                
-                if kind == 1:  # 인용조문
-                    return {
-                        '법령명': self._safe_get(root, './/법령명'),
-                        '시행령명': self._safe_get(root, './/시행령명'),
-                        '시행규칙명': self._safe_get(root, './/시행규칙명'),
-                        '법률조문': self._safe_get(root, './/법률조문'),
-                        '시행령조문': self._safe_get(root, './/시행령조문'),
-                        '시행규칙조문': self._safe_get(root, './/시행규칙조문')
-                    }
-                else:  # 위임조문
-                    return {
-                        '기준법령명': self._safe_get(root, './/기준법령명'),
-                        '법률조문': self._safe_get(root, './/법률조문'),
-                        '시행령조문': self._safe_get(root, './/시행령조문'),
-                        '시행규칙조문': self._safe_get(root, './/시행규칙조문')
-                    }
-            else:
-                return result
-                
-        except Exception as e:
-            logger.error(f"3단 비교 파싱 실패: {str(e)}")
-            return {'error': f'파싱 실패: {str(e)}'}
-    
-    def _parse_delegated_detail(self, result: Any) -> Dict[str, Any]:
-        """위임 법령 상세를 파싱"""
-        try:
-            if isinstance(result, str):
-                root = ET.fromstring(result)
-                
-                delegated = []
-                for item in root.findall('.//위임법령'):
-                    delegated.append({
-                        '위임구분': self._safe_get(item, '위임구분'),
-                        '위임법령제목': self._safe_get(item, '위임법령제목'),
-                        '위임법령조문번호': self._safe_get(item, '위임법령조문번호'),
-                        '위임법령조문제목': self._safe_get(item, '위임법령조문제목')
-                    })
-                
-                return {
-                    '법령명': self._safe_get(root, './/법령명'),
-                    '위임법령목록': delegated
-                }
-            else:
-                return result
-                
-        except Exception as e:
-            logger.error(f"위임 법령 파싱 실패: {str(e)}")
-            return {'error': f'파싱 실패: {str(e)}'}
-    
-    def _parse_article_history(self, result: Any) -> Dict[str, Any]:
-        """조문 변경 이력을 파싱"""
-        try:
-            if isinstance(result, str):
-                root = ET.fromstring(result)
-                
-                history = []
-                for item in root.findall('.//조문변경'):
-                    history.append({
-                        '조문번호': self._safe_get(item, '조문번호'),
-                        '변경사유': self._safe_get(item, '변경사유'),
-                        '조문개정일': self._safe_get(item, '조문개정일'),
-                        '조문시행일': self._safe_get(item, '조문시행일')
-                    })
-                
-                return {
-                    '법령명': self._safe_get(root, './/법령명한글'),
-                    '조문변경이력': history
-                }
-            else:
-                return result
-                
-        except Exception as e:
-            logger.error(f"조문 이력 파싱 실패: {str(e)}")
-            return {'error': f'파싱 실패: {str(e)}'}
-    
-    def _parse_article_history_detail(self, result: Any) -> Dict[str, Any]:
-        """조문별 변경 이력 상세를 파싱"""
-        return self._parse_article_history(result)
-    
-    def _parse_abbreviations(self, result: Any) -> Dict[str, Any]:
-        """법령 약칭을 파싱"""
-        try:
-            if isinstance(result, str):
-                root = ET.fromstring(result)
-                
-                items = []
-                for item in root.findall('.//약칭'):
-                    items.append({
-                        '법령명한글': self._safe_get(item, '법령명한글'),
-                        '법령약칭명': self._safe_get(item, '법령약칭명'),
-                        '등록일': self._safe_get(item, '등록일')
-                    })
-                
-                return {
-                    'type': '법령약칭',
-                    'results': items
-                }
-            else:
-                return result
-                
-        except Exception as e:
-            logger.error(f"약칭 파싱 실패: {str(e)}")
-            return {'error': f'파싱 실패: {str(e)}'}
-    
-    def _parse_oneview_detail(self, result: Any) -> Dict[str, Any]:
-        """한눈보기 상세를 파싱"""
-        try:
-            if isinstance(result, str):
-                root = ET.fromstring(result)
-                
-                return {
-                    '법령명': self._safe_get(root, './/법령명'),
-                    '조번호': self._safe_get(root, './/조번호'),
-                    '조제목': self._safe_get(root, './/조제목'),
-                    '콘텐츠제목': self._safe_get(root, './/콘텐츠제목'),
-                    '링크URL': self._safe_get(root, './/링크URL')
-                }
-            else:
-                return result
-                
-        except Exception as e:
-            logger.error(f"한눈보기 파싱 실패: {str(e)}")
-            return {'error': f'파싱 실패: {str(e)}'}
-    
-    def _safe_get(self, element: Any, path: str, default: str = '') -> str:
-        """XML 요소에서 안전하게 텍스트 추출"""
-        try:
-            if hasattr(element, 'findtext'):
-                return element.findtext(path, default)
-            elif hasattr(element, 'find'):
-                elem = element.find(path)
-                return elem.text if elem is not None and elem.text else default
-            else:
-                return default
-        except:
-            return default
-    
-    # ==================== 통합 검색 메서드 ====================
-    
-    def search_all(self, query: str, search_types: Optional[List[str]] = None) -> Dict[str, Any]:
+    def search_oneview(self,
+                       query: str = "",
+                       output_type: str = "JSON",
+                       display: int = 20,
+                       page: int = 1) -> Dict[str, Any]:
         """
-        모든 유형의 법령을 통합 검색합니다.
+        한눈보기 목록을 조회합니다. (API #27)
         
         Args:
             query: 검색어
-            search_types: 검색할 유형 리스트 ['현행법령', '영문법령', '시행일법령']
+            output_type: 출력형태
+            display: 결과 개수
+            page: 페이지
         
         Returns:
-            통합 검색 결과
+            한눈보기 목록
         """
-        if not search_types:
-            search_types = ['현행법령', '시행일법령']
-        
-        results = {}
-        
         try:
-            if '현행법령' in search_types:
-                results['현행법령'] = self.search_laws(query, display=10)
-            
-            if '시행일법령' in search_types:
-                results['시행일법령'] = self.search_effective_laws(query, display=10)
-            
-            if '영문법령' in search_types:
-                results['영문법령'] = self.search_english_laws(query, display=10)
-            
-            if '법령연혁' in search_types:
-                results['법령연혁'] = self.get_law_history(query=query, display=10)
-            
-            return {
+            params = {
+                'target': self.TARGETS['ONEVIEW'],
+                'type': output_type,
                 'query': query,
-                'search_types': search_types,
-                'results': results,
-                'total_count': sum(r.get('totalCnt', 0) for r in results.values() if isinstance(r, dict))
+                'display': min(display, 100),
+                'page': page
             }
             
+            logger.info(f"한눈보기 목록 검색 - 검색어: {query}")
+            
+            result = self.client.search('lawSearch.do', params)
+            return self._parse_response(result, 'oneview_search')
+            
         except Exception as e:
-            logger.error(f"통합 검색 실패: {str(e)}")
-            return {'error': str(e), 'results': {}}
+            logger.error(f"한눈보기 목록 검색 실패: {str(e)}")
+            return {'error': str(e), 'results': []}
+    
+    # ==================== 28. 한눈보기 본문 조회 API ====================
+    
+    def get_oneview_detail(self,
+                          mst: str,
+                          output_type: str = "JSON",
+                          lm: Optional[str] = None,
+                          ld: Optional[int] = None,
+                          ln: Optional[int] = None,
+                          jo: Optional[int] = None) -> Dict[str, Any]:
+        """
+        한눈보기 본문을 조회합니다. (API #28)
+        
+        Args:
+            mst: 법령 마스터 번호 (필수)
+            output_type: 출력형태
+            lm: 법령명
+            ld: 공포일자
+            ln: 공포번호
+            jo: 조번호
+        
+        Returns:
+            한눈보기 상세
+        """
+        try:
+            params = {
+                'target': self.TARGETS['ONEVIEW'],
+                'type': output_type,
+                'MST': mst
+            }
+            
+            if lm: params['LM'] = lm
+            if ld: params['LD'] = ld
+            if ln: params['LN'] = ln
+            if jo: params['JO'] = jo
+            
+            logger.info(f"한눈보기 상세 조회 - MST: {mst}")
+            
+            result = self.client.get_detail('lawService.do', params)
+            return self._parse_response(result, 'oneview_detail')
+            
+        except Exception as e:
+            logger.error(f"한눈보기 상세 조회 실패: {str(e)}")
+            return {'error': str(e)}
+    
+    # ==================== 파싱 헬퍼 메서드 ====================
+    
+    def _parse_response(self, response: Any, response_type: str) -> Dict[str, Any]:
+        """
+        API 응답을 파싱하여 통일된 형태로 반환
+        
+        Args:
+            response: API 응답 (XML 문자열 또는 JSON 딕셔너리)
+            response_type: 응답 유형
+        
+        Returns:
+            파싱된 결과
+        """
+        try:
+            # JSON 응답 처리
+            if isinstance(response, dict):
+                # 에러 체크
+                if 'error' in response:
+                    return {'error': response['error'], 'results': []}
+                
+                # 기본 구조로 변환
+                return {
+                    'type': response_type,
+                    'totalCnt': response.get('totalCnt', 0),
+                    'page': response.get('page', 1),
+                    'results': response.get('law', response.get('items', response.get('results', [])))
+                }
+            
+            # XML 응답 처리
+            elif isinstance(response, str):
+                # HTML 응답인 경우 그대로 반환
+                if response.strip().startswith('<!DOCTYPE') or response.strip().startswith('<html'):
+                    return {
+                        'type': response_type,
+                        'html': response
+                    }
+                
+                # XML 파싱
+                try:
+                    root = ET.fromstring(response)
+                    
+                    # 에러 체크
+                    error_msg = root.findtext('.//errorMsg')
+                    if error_msg:
+                        return {'error': error_msg, 'results': []}
+                    
+                    # 기본 정보 추출
+                    total_cnt = root.findtext('.//totalCnt', '0')
+                    page = root.findtext('.//page', '1')
+                    
+                    # 결과 추출 (다양한 태그명 처리)
+                    items = []
+                    for tag_name in ['law', 'item', 'eflaw', 'elaw', 'oldAndNew', 'thdCmp']:
+                        items.extend(root.findall(f'.//{tag_name}'))
+                    
+                    # 결과 파싱
+                    results = []
+                    for item in items:
+                        result_dict = {}
+                        for child in item:
+                            if child.text:
+                                result_dict[child.tag] = child.text
+                        if result_dict:
+                            results.append(result_dict)
+                    
+                    return {
+                        'type': response_type,
+                        'totalCnt': int(total_cnt) if total_cnt.isdigit() else 0,
+                        'page': int(page) if page.isdigit() else 1,
+                        'results': results
+                    }
+                    
+                except ET.ParseError as e:
+                    logger.error(f"XML 파싱 오류: {str(e)}")
+                    return {
+                        'type': response_type,
+                        'error': f'XML 파싱 오류: {str(e)}',
+                        'raw': response[:500]  # 디버깅용
+                    }
+            
+            else:
+                return {
+                    'type': response_type,
+                    'error': f'알 수 없는 응답 형식: {type(response)}',
+                    'results': []
+                }
+                
+        except Exception as e:
+            logger.error(f"응답 파싱 중 오류: {str(e)}")
+            return {
+                'type': response_type,
+                'error': str(e),
+                'results': []
+            }
+    
+    # ==================== 유틸리티 메서드 ====================
+    
+    def get_department_codes(self) -> Dict[str, str]:
+        """
+        주요 소관부처 코드를 반환합니다.
+        
+        Returns:
+            소관부처명과 코드 매핑
+        """
+        return {
+            '법무부': '1270000',
+            '행정안전부': '1741000',
+            '국토교통부': '1613000',
+            '산림청': '1400000',
+            '경찰청': '1320000',
+            '국세청': '1210000',
+            '관세청': '1220000',
+            '조달청': '1230000',
+            '통계청': '1240000',
+            '기상청': '1360000',
+            '문화재청': '1550000',
+            '농촌진흥청': '1390000',
+            '특허청': '1430000',
+            '교육부': '1342000',
+            '과학기술정보통신부': '1721000',
+            '외교부': '1262000',
+            '통일부': '1263000',
+            '국방부': '1290000',
+            '기획재정부': '1051000',
+            '문화체육관광부': '1371000',
+            '농림축산식품부': '1543000',
+            '산업통상자원부': '1450000',
+            '보건복지부': '1352000',
+            '환경부': '1480000',
+            '고용노동부': '1492000',
+            '여성가족부': '1383000',
+            '해양수산부': '1192000',
+            '중소벤처기업부': '1421000'
+        }
+    
+    def get_law_type_codes(self) -> Dict[str, str]:
+        """
+        법령종류 코드를 반환합니다.
+        
+        Returns:
+            법령종류명과 코드 매핑
+        """
+        return {
+            '헌법': '001001',
+            '법률': '001002',
+            '대통령령': '001003',
+            '총리령': '001004',
+            '부령': '001005',
+            '대통령훈령': '001006',
+            '국무총리훈령': '001007',
+            '부령외훈령': '001008',
+            '국회규칙': '002001',
+            '대법원규칙': '002002',
+            '헌법재판소규칙': '002003',
+            '중앙선거관리위원회규칙': '002004',
+            '감사원규칙': '002005',
+            '명령': '003001',
+            '조례': '004001',
+            '교육규칙': '004002',
+            '규칙': '004003'
+        }
 
 
 # ==================== 테스트 코드 ====================
@@ -1161,68 +1750,49 @@ if __name__ == "__main__":
     실행: python law_module.py
     """
     
-    # 테스트용 API 키 (실제 사용시 환경변수로 설정)
-    # export LAW_API_KEY=your_api_key
+    print("=" * 60)
+    print("법제처 Open API 통합 모듈 테스트")
+    print("=" * 60)
     
-    print("=" * 50)
-    print("법령 검색 모듈 테스트")
-    print("=" * 50)
+    # API 키 설정 (테스트용 'test' 사용)
+    searcher = LawSearcher(oc_key='test')
     
-    try:
-        # LawSearcher 초기화
-        searcher = LawSearcher()
-        
-        # 1. 현행법령 검색 테스트
-        print("\n1. 현행법령 검색 테스트")
-        print("-" * 30)
-        result = searcher.search_laws("도로교통법", display=5)
-        if 'error' not in result:
-            print(f"검색 결과: {result['totalCnt']}건")
-            for idx, law in enumerate(result['results'][:3], 1):
-                print(f"  {idx}. {law.get('법령명한글', 'N/A')} ({law.get('공포일자', 'N/A')})")
-        else:
-            print(f"오류: {result['error']}")
-        
-        # 2. 법령 상세 조회 테스트
-        print("\n2. 법령 상세 조회 테스트")
-        print("-" * 30)
-        if result.get('results'):
-            first_law = result['results'][0]
-            law_id = first_law.get('법령ID')
-            if law_id:
-                detail = searcher.get_law_detail(law_id=law_id)
-                if 'error' not in detail:
-                    print(f"법령명: {detail.get('법령명_한글', 'N/A')}")
-                    print(f"시행일자: {detail.get('시행일자', 'N/A')}")
-                    print(f"조문 수: {len(detail.get('조문', []))}")
-                else:
-                    print(f"오류: {detail['error']}")
-        
-        # 3. 영문법령 검색 테스트
-        print("\n3. 영문법령 검색 테스트")
-        print("-" * 30)
-        eng_result = searcher.search_english_laws("traffic", display=3)
-        if 'error' not in eng_result:
-            print(f"검색 결과: {eng_result['totalCnt']}건")
-        else:
-            print(f"오류: {eng_result['error']}")
-        
-        # 4. 통합 검색 테스트
-        print("\n4. 통합 검색 테스트")
-        print("-" * 30)
-        integrated = searcher.search_all("교통", ['현행법령', '시행일법령'])
-        if 'error' not in integrated:
-            print(f"전체 검색 결과: {integrated['total_count']}건")
-            for search_type, result in integrated['results'].items():
-                if isinstance(result, dict):
-                    print(f"  - {search_type}: {result.get('totalCnt', 0)}건")
-        else:
-            print(f"오류: {integrated['error']}")
-        
-        print("\n" + "=" * 50)
-        print("테스트 완료!")
-        print("=" * 50)
-        
-    except Exception as e:
-        print(f"\n테스트 중 오류 발생: {str(e)}")
-        print("API 키를 확인하거나 common_api.py 모듈이 있는지 확인하세요.")
+    # 1. 현행법령 검색
+    print("\n[TEST 1] 현행법령 검색")
+    print("-" * 40)
+    result = searcher.search_laws("자동차관리법", display=3)
+    if 'error' not in result:
+        print(f"✅ 검색 성공: {result.get('totalCnt', 0)}건")
+        for idx, law in enumerate(result.get('results', [])[:3], 1):
+            print(f"  {idx}. {law.get('법령명한글', 'N/A')}")
+    else:
+        print(f"❌ 오류: {result['error']}")
+    
+    # 2. 영문법령 검색
+    print("\n[TEST 2] 영문법령 검색")
+    print("-" * 40)
+    result = searcher.search_english_laws("traffic", display=3)
+    if 'error' not in result:
+        print(f"✅ 검색 성공: {result.get('totalCnt', 0)}건")
+    else:
+        print(f"❌ 오류: {result['error']}")
+    
+    # 3. 법령 약칭 조회
+    print("\n[TEST 3] 법령명 약칭 조회")
+    print("-" * 40)
+    result = searcher.search_law_abbreviations()
+    if 'error' not in result:
+        print(f"✅ 조회 성공")
+    else:
+        print(f"❌ 오류: {result['error']}")
+    
+    # 4. 소관부처 코드 확인
+    print("\n[TEST 4] 소관부처 코드")
+    print("-" * 40)
+    dept_codes = searcher.get_department_codes()
+    print(f"✅ 등록된 소관부처: {len(dept_codes)}개")
+    print(f"  예시: 법무부 = {dept_codes['법무부']}")
+    
+    print("\n" + "=" * 60)
+    print("테스트 완료!")
+    print("=" * 60)
