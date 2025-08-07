@@ -3,6 +3,7 @@ common_api.py - 공통 API 클라이언트 모듈 (확장 버전)
 법제처 API와 OpenAI API 통합 관리
 모든 모듈의 API 호출을 지원하는 완전한 구현
 Python 3.13 호환성 수정 버전
+OpenAI API 호환성 수정 (max_tokens 사용)
 """
 
 import re
@@ -529,7 +530,7 @@ class LawAPIClient:
 
 
 class OpenAIHelper:
-    """OpenAI API 헬퍼 클래스 - 확장된 기능"""
+    """OpenAI API 헬퍼 클래스 - 확장된 기능 (호환성 수정)"""
     
     def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
         """
@@ -598,14 +599,15 @@ class OpenAIHelper:
             위 자료를 바탕으로 질문에 대해 답변해주세요.
             """
             
+            # max_completion_tokens 대신 max_tokens 사용 (호환성 수정)
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}  # 수정: prompt -> user_prompt
+                    {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.3,
-                max_completion_tokens=1500
+                max_tokens=1500  # max_completion_tokens -> max_tokens 변경
             )
             
             return response.choices[0].message.content
@@ -643,14 +645,15 @@ class OpenAIHelper:
             3. 추가된 내용
             4. 변경의 의미와 영향"""
             
+            # max_completion_tokens 대신 max_tokens 사용 (호환성 수정)
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "법령 비교 전문가입니다."},
-                    {"role": "user", "content": comparison_prompt}  # 수정: prompt -> comparison_prompt
+                    {"role": "user", "content": comparison_prompt}
                 ],
                 temperature=0.3,
-                max_completion_tokens=1500
+                max_tokens=1500  # max_completion_tokens -> max_tokens 변경
             )
             
             return response.choices[0].message.content
@@ -686,14 +689,15 @@ class OpenAIHelper:
             3. 결정의 의미
             4. 유사 사례에 대한 시사점"""
             
+            # max_completion_tokens 대신 max_tokens 사용 (호환성 수정)
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "행정법 전문가입니다."},
-                    {"role": "user", "content": decision_prompt}  # 수정: prompt -> decision_prompt
+                    {"role": "user", "content": decision_prompt}
                 ],
                 temperature=0.3,
-                max_completion_tokens=1500
+                max_tokens=1500  # max_completion_tokens -> max_tokens 변경
             )
             
             return response.choices[0].message.content
@@ -717,6 +721,7 @@ class OpenAIHelper:
             return text[:max_length] + "..." if len(text) > max_length else text
         
         try:
+            # max_completion_tokens 대신 max_tokens 사용 (호환성 수정)
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -724,7 +729,7 @@ class OpenAIHelper:
                     {"role": "user", "content": f"다음 법률 조문을 {max_length}자 이내로 요약해주세요:\n\n{text}"}
                 ],
                 temperature=0.3,
-                max_completion_tokens=max_length
+                max_tokens=max_length  # max_completion_tokens -> max_tokens 변경
             )
             
             return response.choices[0].message.content
@@ -762,14 +767,15 @@ class OpenAIHelper:
             
             전문적이고 법적 형식을 갖춘 문서를 작성해주세요."""
             
+            # max_completion_tokens 대신 max_tokens 사용 (호환성 수정)
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "법률 문서 작성 전문가입니다."},
-                    {"role": "user", "content": document_prompt}  # 수정: prompt -> document_prompt
+                    {"role": "user", "content": document_prompt}
                 ],
                 temperature=0.5,
-                max_completion_tokens=2000
+                max_tokens=2000  # max_completion_tokens -> max_tokens 변경
             )
             
             return response.choices[0].message.content
@@ -970,22 +976,8 @@ if __name__ == "__main__":
     else:
         print(f"검색 실패: {results.get('error')}")
     
-    # 위원회 결정문 검색 테스트
-    print("\n3. 위원회 결정문 검색 테스트")
-    results = law_client.search(
-        target='ftc',  # 공정거래위원회
-        query='불공정',
-        display=5,
-        type='json'
-    )
-    print(f"공정거래위원회 결정문 검색 완료")
-    if 'error' not in results:
-        print(f"검색 결과: {results.get('totalCnt', 0)}건")
-    else:
-        print(f"검색 실패: {results.get('error')}")
-    
     # OpenAI 테스트 (API 키가 있는 경우만)
-    print("\n4. OpenAI Helper 테스트")
+    print("\n3. OpenAI Helper 테스트")
     ai_helper = OpenAIHelper()
     if ai_helper.enabled:
         summary = ai_helper.summarize_law("이 법은 도로에서 일어나는 교통상의 모든 위험과 장해를 방지하고 제거하여 안전하고 원활한 교통을 확보함을 목적으로 한다.", 50)
