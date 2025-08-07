@@ -1,0 +1,125 @@
+version: '3.8'
+
+services:
+  k-law-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    container_name: k-law-assistant
+    
+    ports:
+      - "8501:8501"
+    
+    environment:
+      # API Keys (use .env file or set directly)
+      - LAW_API_KEY=${LAW_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      
+      # Application settings
+      - DEFAULT_GPT_MODEL=${DEFAULT_GPT_MODEL:-gpt-4o-mini}
+      - CACHE_TTL=${CACHE_TTL:-3600}
+      - DEBUG=${DEBUG:-False}
+      
+      # Streamlit settings
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_FILE_WATCHER_TYPE=none
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+      
+      # Feature flags
+      - ENABLE_TREATY_SEARCH=${ENABLE_TREATY_SEARCH:-true}
+      - ENABLE_COMMITTEE_SEARCH=${ENABLE_COMMITTEE_SEARCH:-true}
+      - ENABLE_LOCAL_LAW_SEARCH=${ENABLE_LOCAL_LAW_SEARCH:-true}
+      - ENABLE_AI_ANALYSIS=${ENABLE_AI_ANALYSIS:-true}
+    
+    volumes:
+      # Code volume for development (remove in production)
+      - ./:/app:ro
+      
+      # Data persistence
+      - k-law-data:/app/data
+      
+      # Logs persistence
+      - k-law-logs:/app/logs
+      
+      # Streamlit cache
+      - streamlit-cache:/app/.streamlit
+    
+    restart: unless-stopped
+    
+    networks:
+      - k-law-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Redis for caching (uncomment if needed)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: k-law-redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis-data:/data
+  #   networks:
+  #     - k-law-network
+  #   restart: unless-stopped
+  #   command: redis-server --appendonly yes
+
+  # Optional: PostgreSQL for data persistence (uncomment if needed)
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: k-law-postgres
+  #   environment:
+  #     - POSTGRES_USER=klawuser
+  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+  #     - POSTGRES_DB=klawdb
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   networks:
+  #     - k-law-network
+  #   restart: unless-stopped
+
+volumes:
+  k-law-data:
+    driver: local
+  k-law-logs:
+    driver: local
+  streamlit-cache:
+    driver: local
+  # redis-data:
+  #   driver: local
+  # postgres-data:
+  #   driver: local
+
+networks:
+  k-law-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
