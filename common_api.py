@@ -690,7 +690,7 @@ class OpenAIHelper:
                     {"role": "user", "content": f"다음 법률 조문을 {max_length}자 이내로 요약해주세요:\n\n{text}"}
                 ],
                 temperature=0.3,
-                max_tokens=max_length
+                max_completion_tokens=max_length
             )
             
             return response.choices[0].message.content
