@@ -1,9 +1,10 @@
 """
 K-Law Assistant - 통합 법률 검토 지원 시스템
-Main Application with Streamlit UI
+Main Application with Streamlit UI (Fixed Version)
 """
 
 import os
+import sys
 import json
 import time
 from datetime import datetime, timedelta
@@ -11,32 +12,41 @@ from typing import Dict, List, Optional, Any, Tuple
 import logging
 from enum import Enum
 
-import streamlit as st
-import pandas as pd
+# 환경변수 로드
 from dotenv import load_dotenv
-
-# Custom modules
-from common_api import LawAPIClient, OpenAIHelper
-from legal_prompts_module import PromptBuilder, ServiceType, detect_service_type
-from law_module import LawSearcher
-from committee_module import CommitteeDecisionSearcher
-from case_module import CaseSearcher
-from treaty_admin_module import TreatyAdminSearcher
-
-# Load environment variables
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+import streamlit as st
+import pandas as pd
+
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# Page configuration
+# Page configuration - 반드시 다른 Streamlit 명령 전에 실행
 st.set_page_config(
     page_title="K-Law Assistant",
     page_icon="⚖️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Custom modules import with error handling
+try:
+    from common_api import LawAPIClient, OpenAIHelper
+    from legal_prompts_module import PromptBuilder, ServiceType, detect_service_type
+    from law_module import LawSearcher
+    from committee_module import CommitteeDecisionSearcher
+    from case_module import CaseSearcher
+    from treaty_admin_module import TreatyAdminSearcher
+    MODULES_LOADED = True
+except ImportError as e:
+    MODULES_LOADED = False
+    st.error(f"❌ 필수 모듈을 불러올 수 없습니다: {str(e)}")
+    st.info("requirements.txt의 패키지를 모두 설치했는지 확인해주세요.")
 
 # ========================= Query Type Detection =========================
 
@@ -54,6 +64,9 @@ def detect_query_type(query: str) -> Tuple[QueryType, str]:
     Returns:
         (QueryType, reason): 질문 유형과 판별 이유
     """
+    if not query:
+        return QueryType.SIMPLE_SEARCH, "검색어 없음"
+        
     query_lower = query.lower()
     
     # 단순 검색 키워드
@@ -103,47 +116,117 @@ def detect_query_type(query: str) -> Tuple[QueryType, str]:
 
 def init_session_state():
     """Initialize session state variables"""
-    if 'search_history' not in st.session_state:
-        st.session_state.search_history = []
-    
-    if 'favorites' not in st.session_state:
-        st.session_state.favorites = []
-    
-    if 'current_results' not in st.session_state:
-        st.session_state.current_results = {}
-    
-    if 'api_keys' not in st.session_state:
-        st.session_state.api_keys = {
-            'law_api_key': os.getenv('LAW_API_KEY', ''),
-            'openai_api_key': os.getenv('OPENAI_API_KEY', '')
-        }
-    
-    if 'selected_model' not in st.session_state:
-        st.session_state.selected_model = 'gpt-4o-mini'
-    
-    if 'cache' not in st.session_state:
-        st.session_state.cache = {}
+    try:
+        # 필수 세션 변수 초기화
+        if 'initialized' not in st.session_state:
+            st.session_state.initialized = False
+            
+        if 'search_history' not in st.session_state:
+            st.session_state.search_history = []
+        
+        if 'favorites' not in st.session_state:
+            st.session_state.favorites = []
+        
+        if 'current_results' not in st.session_state:
+            st.session_state.current_results = {}
+        
+        if 'api_keys' not in st.session_state:
+            st.session_state.api_keys = {
+                'law_api_key': os.getenv('LAW_API_KEY', ''),
+                'openai_api_key': os.getenv('OPENAI_API_KEY', '')
+            }
+        
+        if 'selected_model' not in st.session_state:
+            st.session_state.selected_model = 'gpt-4o-mini'
+        
+        if 'cache' not in st.session_state:
+            st.session_state.cache = {}
+            
+        if 'api_clients' not in st.session_state:
+            st.session_state.api_clients = None
+            
+        st.session_state.initialized = True
+        logger.info("Session state initialized successfully")
+        
+    except Exception as e:
+        logger.error(f"Session state initialization error: {str(e)}")
+        st.error(f"세션 초기화 오류: {str(e)}")
 
 # ========================= API Clients Initialization =========================
 
-@st.cache_resource
-def get_api_clients():
+def get_api_clients(force_reload=False):
     """Initialize and cache API clients"""
-    law_api_key = st.session_state.api_keys['law_api_key']
-    openai_api_key = st.session_state.api_keys['openai_api_key']
-    
-    law_client = LawAPIClient(oc_key=law_api_key) if law_api_key else None
-    ai_helper = OpenAIHelper(api_key=openai_api_key) if openai_api_key else None
-    
-    return {
-        'law_client': law_client,
-        'ai_helper': ai_helper,
-        'law_searcher': LawSearcher(api_client=law_client) if law_client else None,
-        'committee_searcher': CommitteeDecisionSearcher(api_client=law_client) if law_client else None,
-        'case_searcher': CaseSearcher(api_client=law_client, ai_helper=ai_helper) if law_client else None,
-        'treaty_searcher': TreatyAdminSearcher(oc_key=law_api_key) if law_api_key else None,
-        'prompt_builder': PromptBuilder()
-    }
+    try:
+        # 세션에서 캐시된 클라이언트 확인
+        if not force_reload and st.session_state.api_clients is not None:
+            return st.session_state.api_clients
+            
+        law_api_key = st.session_state.api_keys.get('law_api_key', '')
+        openai_api_key = st.session_state.api_keys.get('openai_api_key', '')
+        
+        # API 클라이언트 초기화
+        clients = {}
+        
+        try:
+            law_client = LawAPIClient(oc_key=law_api_key) if law_api_key else None
+            clients['law_client'] = law_client
+        except Exception as e:
+            logger.error(f"LawAPIClient initialization error: {str(e)}")
+            clients['law_client'] = None
+            
+        try:
+            ai_helper = OpenAIHelper(api_key=openai_api_key) if openai_api_key else None
+            clients['ai_helper'] = ai_helper
+        except Exception as e:
+            logger.error(f"OpenAIHelper initialization error: {str(e)}")
+            clients['ai_helper'] = None
+            
+        try:
+            clients['law_searcher'] = LawSearcher(api_client=clients['law_client']) if clients['law_client'] else None
+        except Exception as e:
+            logger.error(f"LawSearcher initialization error: {str(e)}")
+            clients['law_searcher'] = None
+            
+        try:
+            clients['committee_searcher'] = CommitteeDecisionSearcher(api_client=clients['law_client']) if clients['law_client'] else None
+        except Exception as e:
+            logger.error(f"CommitteeDecisionSearcher initialization error: {str(e)}")
+            clients['committee_searcher'] = None
+            
+        try:
+            clients['case_searcher'] = CaseSearcher(api_client=clients['law_client'], ai_helper=clients['ai_helper']) if clients['law_client'] else None
+        except Exception as e:
+            logger.error(f"CaseSearcher initialization error: {str(e)}")
+            clients['case_searcher'] = None
+            
+        try:
+            clients['treaty_searcher'] = TreatyAdminSearcher(oc_key=law_api_key) if law_api_key else None
+        except Exception as e:
+            logger.error(f"TreatyAdminSearcher initialization error: {str(e)}")
+            clients['treaty_searcher'] = None
+            
+        try:
+            clients['prompt_builder'] = PromptBuilder()
+        except Exception as e:
+            logger.error(f"PromptBuilder initialization error: {str(e)}")
+            clients['prompt_builder'] = None
+        
+        # 세션에 저장
+        st.session_state.api_clients = clients
+        
+        return clients
+        
+    except Exception as e:
+        logger.error(f"API clients initialization failed: {str(e)}")
+        return {
+            'law_client': None,
+            'ai_helper': None,
+            'law_searcher': None,
+            'committee_searcher': None,
+            'case_searcher': None,
+            'treaty_searcher': None,
+            'prompt_builder': None
+        }
 
 # ========================= Search Functions =========================
 
@@ -158,51 +241,65 @@ def perform_simple_search(query: str, search_targets: List[str]) -> Dict[str, An
         'results': {}
     }
     
+    if not clients:
+        st.error("API 클라이언트를 초기화할 수 없습니다.")
+        return results
+    
     with st.spinner('검색 중...'):
         # 법령 검색
-        if '법령' in search_targets and clients['law_searcher']:
+        if '법령' in search_targets and clients.get('law_searcher'):
             try:
                 law_results = clients['law_searcher'].search_laws(query, display=10)
                 if law_results and 'results' in law_results:
                     results['results']['laws'] = law_results['results']
+                    logger.info(f"법령 검색 성공: {len(law_results['results'])}건")
             except Exception as e:
-                st.error(f"법령 검색 오류: {str(e)}")
+                logger.error(f"법령 검색 오류: {str(e)}")
+                st.warning(f"법령 검색 중 오류 발생: {str(e)}")
         
         # 판례 검색
-        if '판례' in search_targets and clients['case_searcher']:
+        if '판례' in search_targets and clients.get('case_searcher'):
             try:
                 case_results = clients['case_searcher'].search_court_cases(query, display=10)
                 if case_results.get('status') == 'success':
                     results['results']['cases'] = case_results.get('cases', [])
+                    logger.info(f"판례 검색 성공: {len(case_results.get('cases', []))}건")
             except Exception as e:
-                st.error(f"판례 검색 오류: {str(e)}")
+                logger.error(f"판례 검색 오류: {str(e)}")
+                st.warning(f"판례 검색 중 오류 발생: {str(e)}")
         
         # 헌재결정례 검색
-        if '헌재결정' in search_targets and clients['case_searcher']:
+        if '헌재결정' in search_targets and clients.get('case_searcher'):
             try:
                 const_results = clients['case_searcher'].search_constitutional_decisions(query, display=10)
                 if const_results.get('status') == 'success':
                     results['results']['constitutional'] = const_results.get('decisions', [])
+                    logger.info(f"헌재결정례 검색 성공: {len(const_results.get('decisions', []))}건")
             except Exception as e:
-                st.error(f"헌재결정례 검색 오류: {str(e)}")
+                logger.error(f"헌재결정례 검색 오류: {str(e)}")
+                st.warning(f"헌재결정례 검색 중 오류 발생: {str(e)}")
         
         # 법령해석례 검색
-        if '법령해석' in search_targets and clients['case_searcher']:
+        if '법령해석' in search_targets and clients.get('case_searcher'):
             try:
                 interp_results = clients['case_searcher'].search_legal_interpretations(query, display=10)
                 if interp_results.get('status') == 'success':
                     results['results']['interpretations'] = interp_results.get('interpretations', [])
+                    logger.info(f"법령해석례 검색 성공: {len(interp_results.get('interpretations', []))}건")
             except Exception as e:
-                st.error(f"법령해석례 검색 오류: {str(e)}")
+                logger.error(f"법령해석례 검색 오류: {str(e)}")
+                st.warning(f"법령해석례 검색 중 오류 발생: {str(e)}")
         
         # 행정규칙 검색
-        if '행정규칙' in search_targets and clients['treaty_searcher']:
+        if '행정규칙' in search_targets and clients.get('treaty_searcher'):
             try:
                 admin_results = clients['treaty_searcher'].search_admin_rules(query, display=10)
                 if 'error' not in admin_results:
                     results['results']['admin_rules'] = admin_results.get('rules', [])
+                    logger.info(f"행정규칙 검색 성공: {len(admin_results.get('rules', []))}건")
             except Exception as e:
-                st.error(f"행정규칙 검색 오류: {str(e)}")
+                logger.error(f"행정규칙 검색 오류: {str(e)}")
+                st.warning(f"행정규칙 검색 중 오류 발생: {str(e)}")
     
     return results
 
@@ -212,21 +309,28 @@ def perform_ai_analysis(query: str, context: Dict[str, Any], service_type: Servi
     """
     clients = get_api_clients()
     
-    if not clients['ai_helper'] or not clients['ai_helper'].enabled:
+    if not clients or not clients.get('ai_helper'):
         return "⚠️ OpenAI API가 설정되지 않았습니다. 사이드바에서 API 키를 입력해주세요."
     
-    # 프롬프트 생성
-    system_prompt, user_prompt = clients['prompt_builder'].build_prompt(
-        service_type=service_type,
-        query=query,
-        context=context
-    )
+    if not clients['ai_helper'].enabled:
+        return "⚠️ OpenAI API가 활성화되지 않았습니다. API 키를 확인해주세요."
     
-    # OpenAI API 호출 (선택된 모델 사용)
+    # 프롬프트 빌더 확인
+    if not clients.get('prompt_builder'):
+        return "⚠️ 프롬프트 빌더를 초기화할 수 없습니다."
+    
     try:
+        # 프롬프트 생성
+        system_prompt, user_prompt = clients['prompt_builder'].build_prompt(
+            service_type=service_type,
+            query=query,
+            context=context
+        )
+        
+        # OpenAI API 호출
         from openai import OpenAI
         
-        client = OpenAI(api_key=st.session_state.api_keys['openai_api_key'])
+        client = OpenAI(api_key=st.session_state.api_keys.get('openai_api_key'))
         
         response = client.chat.completions.create(
             model=st.session_state.selected_model,
@@ -256,14 +360,14 @@ def render_sidebar():
         with st.expander("🔑 API 설정", expanded=False):
             law_api_key = st.text_input(
                 "법제처 API Key",
-                value=st.session_state.api_keys['law_api_key'],
+                value=st.session_state.api_keys.get('law_api_key', ''),
                 type="password",
                 help="https://open.law.go.kr 에서 발급"
             )
             
             openai_api_key = st.text_input(
                 "OpenAI API Key",
-                value=st.session_state.api_keys['openai_api_key'],
+                value=st.session_state.api_keys.get('openai_api_key', ''),
                 type="password",
                 help="https://platform.openai.com 에서 발급"
             )
@@ -271,6 +375,7 @@ def render_sidebar():
             if st.button("API 키 저장"):
                 st.session_state.api_keys['law_api_key'] = law_api_key
                 st.session_state.api_keys['openai_api_key'] = openai_api_key
+                st.session_state.api_clients = None  # 클라이언트 재초기화 필요
                 st.success("API 키가 저장되었습니다!")
                 st.rerun()
         
@@ -365,50 +470,68 @@ def get_result_type_label(result_type: str) -> str:
 
 def display_search_item(result_type: str, item: Dict, idx: int):
     """개별 검색 결과 항목 표시"""
-    if result_type == 'laws':
-        st.markdown(f"""
-        **{idx}. {item.get('법령명한글', 'N/A')}**
-        - 공포일자: {item.get('공포일자', 'N/A')}
-        - 시행일자: {item.get('시행일자', 'N/A')}
-        - 소관부처: {item.get('소관부처명', 'N/A')}
-        """)
-    
-    elif result_type == 'cases':
-        st.markdown(f"""
-        **{idx}. {item.get('title', item.get('사건명', 'N/A'))}**
-        - 법원: {item.get('court', item.get('법원명', 'N/A'))}
-        - 사건번호: {item.get('case_number', item.get('사건번호', 'N/A'))}
-        - 선고일자: {item.get('date', item.get('선고일자', 'N/A'))}
-        """)
-    
-    elif result_type == 'constitutional':
-        st.markdown(f"""
-        **{idx}. {item.get('title', item.get('사건명', 'N/A'))}**
-        - 사건번호: {item.get('case_number', item.get('사건번호', 'N/A'))}
-        - 종국일자: {item.get('date', item.get('종국일자', 'N/A'))}
-        """)
-    
-    elif result_type == 'interpretations':
-        st.markdown(f"""
-        **{idx}. {item.get('title', item.get('안건명', 'N/A'))}**
-        - 해석기관: {item.get('responding_agency', item.get('해석기관명', 'N/A'))}
-        - 안건번호: {item.get('case_number', item.get('안건번호', 'N/A'))}
-        - 회신일자: {item.get('date', item.get('회신일자', 'N/A'))}
-        """)
-    
-    else:
-        # 기본 표시
-        st.markdown(f"**{idx}. {item.get('title', item.get('제목', str(item)[:100]))}**")
+    try:
+        if result_type == 'laws':
+            st.markdown(f"""
+            **{idx}. {item.get('법령명한글', 'N/A')}**
+            - 공포일자: {item.get('공포일자', 'N/A')}
+            - 시행일자: {item.get('시행일자', 'N/A')}
+            - 소관부처: {item.get('소관부처명', 'N/A')}
+            """)
+        
+        elif result_type == 'cases':
+            st.markdown(f"""
+            **{idx}. {item.get('title', item.get('사건명', 'N/A'))}**
+            - 법원: {item.get('court', item.get('법원명', 'N/A'))}
+            - 사건번호: {item.get('case_number', item.get('사건번호', 'N/A'))}
+            - 선고일자: {item.get('date', item.get('선고일자', 'N/A'))}
+            """)
+        
+        elif result_type == 'constitutional':
+            st.markdown(f"""
+            **{idx}. {item.get('title', item.get('사건명', 'N/A'))}**
+            - 사건번호: {item.get('case_number', item.get('사건번호', 'N/A'))}
+            - 종국일자: {item.get('date', item.get('종국일자', 'N/A'))}
+            """)
+        
+        elif result_type == 'interpretations':
+            st.markdown(f"""
+            **{idx}. {item.get('title', item.get('안건명', 'N/A'))}**
+            - 해석기관: {item.get('responding_agency', item.get('해석기관명', 'N/A'))}
+            - 안건번호: {item.get('case_number', item.get('안건번호', 'N/A'))}
+            - 회신일자: {item.get('date', item.get('회신일자', 'N/A'))}
+            """)
+        
+        else:
+            # 기본 표시
+            st.markdown(f"**{idx}. {item.get('title', item.get('제목', str(item)[:100]))}**")
+    except Exception as e:
+        logger.error(f"검색 항목 표시 오류: {str(e)}")
+        st.markdown(f"**{idx}. 항목 표시 오류**")
 
 # ========================= Main Application =========================
 
 def main():
     """Main application"""
+    
+    # 모듈 로드 확인
+    if not MODULES_LOADED:
+        st.error("필수 모듈을 로드할 수 없습니다. 설치를 확인해주세요.")
+        st.code("pip install -r requirements.txt", language="bash")
+        return
+    
+    # 세션 상태 초기화
     init_session_state()
+    
+    # 사이드바 렌더링
     render_sidebar()
     
     st.title("⚖️ K-Law Assistant - AI 법률 검토 지원 시스템")
     st.markdown("법령, 판례, 행정규칙 등을 종합 검토하여 AI가 법률 자문을 제공합니다.")
+    
+    # API 키 확인
+    if not st.session_state.api_keys.get('law_api_key'):
+        st.warning("⚠️ 법제처 API 키가 설정되지 않았습니다. 사이드바에서 설정해주세요.")
     
     # 탭 구성
     tab1, tab2, tab3, tab4 = st.tabs(["🔍 통합 검색", "🤖 AI 법률 분석", "📊 검색 이력", "ℹ️ 사용 가이드"])
@@ -420,10 +543,19 @@ def main():
         # 검색 입력
         col1, col2 = st.columns([5, 1])
         with col1:
+            # 빠른 검색이나 이력 검색 값 처리
+            default_value = ""
+            if 'quick_search' in st.session_state:
+                default_value = st.session_state.quick_search
+                del st.session_state.quick_search
+            elif 'history_search' in st.session_state:
+                default_value = st.session_state.history_search
+                del st.session_state.history_search
+                
             search_query = st.text_input(
                 "검색어를 입력하세요",
                 placeholder="예: 도로교통법 음주운전, 개인정보보호법, 근로계약서",
-                value=st.session_state.get('quick_search', '') or st.session_state.get('history_search', '')
+                value=default_value
             )
         
         with col2:
@@ -468,16 +600,14 @@ def main():
                     if st.button("AI 분석 탭으로 이동"):
                         st.session_state.ai_query = search_query
                         st.rerun()
-        
-        # 빠른 검색 초기화
-        if 'quick_search' in st.session_state:
-            del st.session_state.quick_search
-        if 'history_search' in st.session_state:
-            del st.session_state.history_search
     
     # Tab 2: AI 법률 분석
     with tab2:
         st.header("AI 법률 분석 및 자문")
+        
+        # OpenAI API 키 확인
+        if not st.session_state.api_keys.get('openai_api_key'):
+            st.warning("⚠️ OpenAI API 키가 설정되지 않았습니다. 사이드바에서 설정해주세요.")
         
         # 서비스 유형 선택
         service_type = st.selectbox(
@@ -495,14 +625,19 @@ def main():
         )
         
         # 질문 입력
+        default_ai_query = st.session_state.get('ai_query', '')
+        if 'ai_query' in st.session_state:
+            del st.session_state.ai_query
+            
         ai_query = st.text_area(
             "질문 또는 검토 요청사항",
             placeholder="법률 관련 질문을 자세히 입력해주세요...",
-            value=st.session_state.get('ai_query', ''),
+            value=default_ai_query,
             height=150
         )
         
         # 계약서 검토인 경우 추가 입력
+        contract_text = ""
         if service_type == ServiceType.CONTRACT_REVIEW:
             contract_text = st.text_area(
                 "계약서 내용",
@@ -511,6 +646,7 @@ def main():
             )
         
         # 법률자문의견서인 경우 추가 입력
+        facts = ""
         if service_type == ServiceType.LEGAL_OPINION:
             facts = st.text_area(
                 "사실관계",
@@ -520,112 +656,122 @@ def main():
         
         # AI 분석 실행
         if st.button("🤖 AI 분석 시작", type="primary"):
-            if not ai_query:
+            if not ai_query and not contract_text:
                 st.error("질문을 입력해주세요.")
             else:
                 with st.spinner("AI가 관련 자료를 검색하고 분석 중입니다..."):
-                    # 1. 관련 자료 검색
-                    search_results = perform_simple_search(
-                        ai_query,
-                        ['법령', '판례', '법령해석', '행정규칙']
-                    )
-                    
-                    # 2. AI 분석
-                    if service_type == ServiceType.CONTRACT_REVIEW:
-                        analysis = perform_ai_analysis(
-                            contract_text if 'contract_text' in locals() else ai_query,
-                            search_results['results'],
-                            service_type
+                    try:
+                        # 1. 관련 자료 검색
+                        search_query = contract_text if service_type == ServiceType.CONTRACT_REVIEW and contract_text else ai_query
+                        search_results = perform_simple_search(
+                            search_query[:100],  # 검색어 길이 제한
+                            ['법령', '판례', '법령해석', '행정규칙']
                         )
-                    elif service_type == ServiceType.LEGAL_OPINION:
-                        analysis = perform_ai_analysis(
-                            ai_query,
-                            {**search_results['results'], 'facts': facts if 'facts' in locals() else ''},
-                            service_type
-                        )
-                    else:
-                        analysis = perform_ai_analysis(
-                            ai_query,
-                            search_results['results'],
-                            service_type
-                        )
-                    
-                    # 3. 결과 표시
-                    st.markdown("### 📋 AI 분석 결과")
-                    st.markdown(analysis)
-                    
-                    # 4. 참고 자료 표시
-                    with st.expander("📚 참고 법률자료", expanded=False):
-                        render_search_results(search_results)
-                    
-                    # 5. 이력 저장
-                    st.session_state.search_history.append({
-                        'query': ai_query,
-                        'timestamp': datetime.now().isoformat(),
-                        'type': 'ai_analysis',
-                        'service_type': service_type.value
-                    })
-        
-        # AI 질문 초기화
-        if 'ai_query' in st.session_state:
-            del st.session_state.ai_query
+                        
+                        # 2. AI 분석
+                        if service_type == ServiceType.CONTRACT_REVIEW:
+                            analysis = perform_ai_analysis(
+                                contract_text or ai_query,
+                                search_results['results'],
+                                service_type
+                            )
+                        elif service_type == ServiceType.LEGAL_OPINION:
+                            context = {**search_results['results'], 'facts': facts}
+                            analysis = perform_ai_analysis(
+                                ai_query,
+                                context,
+                                service_type
+                            )
+                        else:
+                            analysis = perform_ai_analysis(
+                                ai_query,
+                                search_results['results'],
+                                service_type
+                            )
+                        
+                        # 3. 결과 표시
+                        st.markdown("### 📋 AI 분석 결과")
+                        st.markdown(analysis)
+                        
+                        # 4. 참고 자료 표시
+                        with st.expander("📚 참고 법률자료", expanded=False):
+                            render_search_results(search_results)
+                        
+                        # 5. 이력 저장
+                        st.session_state.search_history.append({
+                            'query': ai_query[:100],
+                            'timestamp': datetime.now().isoformat(),
+                            'type': 'ai_analysis',
+                            'service_type': service_type.value
+                        })
+                        
+                    except Exception as e:
+                        logger.error(f"AI 분석 실행 오류: {str(e)}")
+                        st.error(f"AI 분석 중 오류가 발생했습니다: {str(e)}")
     
     # Tab 3: 검색 이력
     with tab3:
         st.header("검색 이력 관리")
         
         if st.session_state.search_history:
-            # 이력을 DataFrame으로 변환
-            history_df = pd.DataFrame(st.session_state.search_history)
-            history_df['timestamp'] = pd.to_datetime(history_df['timestamp'])
-            history_df = history_df.sort_values('timestamp', ascending=False)
-            
-            # 필터링 옵션
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                filter_type = st.selectbox(
-                    "검색 유형",
-                    ["전체", "단순 검색", "AI 분석"],
-                    key="filter_type"
-                )
-            
-            with col2:
-                date_range = st.date_input(
-                    "기간",
-                    value=(datetime.now() - timedelta(days=7), datetime.now()),
-                    key="date_range"
-                )
-            
-            with col3:
-                if st.button("🗑️ 이력 삭제", use_container_width=True):
-                    st.session_state.search_history = []
-                    st.rerun()
-            
-            # 필터링 적용
-            if filter_type == "단순 검색":
-                history_df = history_df[history_df['type'] == 'simple_search']
-            elif filter_type == "AI 분석":
-                history_df = history_df[history_df['type'] == 'ai_analysis']
-            
-            # 이력 표시
-            st.dataframe(
-                history_df[['timestamp', 'query', 'type']].head(20),
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # 이력 상세 보기
-            if len(history_df) > 0:
-                st.markdown("### 상세 보기")
-                selected_idx = st.selectbox(
-                    "검색 이력 선택",
-                    range(len(history_df)),
-                    format_func=lambda x: f"{history_df.iloc[x]['timestamp'].strftime('%Y-%m-%d %H:%M')} - {history_df.iloc[x]['query'][:50]}"
-                )
+            try:
+                # 이력을 DataFrame으로 변환
+                history_df = pd.DataFrame(st.session_state.search_history)
+                history_df['timestamp'] = pd.to_datetime(history_df['timestamp'])
+                history_df = history_df.sort_values('timestamp', ascending=False)
                 
-                if selected_idx is not None:
-                    selected = history_df.iloc[selected_idx]
-                    st.json(selected.to_dict())
+                # 필터링 옵션
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    filter_type = st.selectbox(
+                        "검색 유형",
+                        ["전체", "단순 검색", "AI 분석"],
+                        key="filter_type"
+                    )
+                
+                with col2:
+                    date_range = st.date_input(
+                        "기간",
+                        value=(datetime.now() - timedelta(days=7), datetime.now()),
+                        key="date_range"
+                    )
+                
+                with col3:
+                    if st.button("🗑️ 이력 삭제", use_container_width=True):
+                        st.session_state.search_history = []
+                        st.rerun()
+                
+                # 필터링 적용
+                if filter_type == "단순 검색":
+                    history_df = history_df[history_df['type'] == 'simple_search']
+                elif filter_type == "AI 분석":
+                    history_df = history_df[history_df['type'] == 'ai_analysis']
+                
+                # 이력 표시
+                if not history_df.empty:
+                    st.dataframe(
+                        history_df[['timestamp', 'query', 'type']].head(20),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # 이력 상세 보기
+                    st.markdown("### 상세 보기")
+                    selected_idx = st.selectbox(
+                        "검색 이력 선택",
+                        range(len(history_df)),
+                        format_func=lambda x: f"{history_df.iloc[x]['timestamp'].strftime('%Y-%m-%d %H:%M')} - {history_df.iloc[x]['query'][:50]}"
+                    )
+                    
+                    if selected_idx is not None:
+                        selected = history_df.iloc[selected_idx]
+                        st.json(selected.to_dict())
+                else:
+                    st.info("선택한 기간에 검색 이력이 없습니다.")
+                    
+            except Exception as e:
+                logger.error(f"검색 이력 표시 오류: {str(e)}")
+                st.error(f"검색 이력을 표시할 수 없습니다: {str(e)}")
         else:
             st.info("검색 이력이 없습니다.")
     
@@ -661,16 +807,24 @@ def main():
         
         # 시스템 정보
         with st.expander("시스템 정보"):
+            api_status = {
+                "law_api": "✅" if st.session_state.api_keys.get('law_api_key') else "❌",
+                "openai_api": "✅" if st.session_state.api_keys.get('openai_api_key') else "❌"
+            }
+            
             st.json({
                 "version": "1.0.0",
                 "last_updated": "2025-01-01",
                 "models_available": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
                 "search_targets": ["법령", "판례", "헌재결정례", "법령해석례", "행정규칙", "자치법규", "위원회결정"],
-                "api_status": {
-                    "law_api": "✅" if st.session_state.api_keys['law_api_key'] else "❌",
-                    "openai_api": "✅" if st.session_state.api_keys['openai_api_key'] else "❌"
-                }
+                "api_status": api_status,
+                "session_initialized": st.session_state.get('initialized', False)
             })
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"Application error: {str(e)}")
+        st.error(f"애플리케이션 실행 중 오류가 발생했습니다: {str(e)}")
+        st.info("페이지를 새로고침하거나 관리자에게 문의해주세요.")
