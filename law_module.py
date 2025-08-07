@@ -2,7 +2,7 @@
 law_module.py - 법제처 Open API 통합 모듈
 모든 법령 검색 기능을 포함한 완전한 구현
 작성일: 2024
-버전: 2.0
+버전: 2.1 (API 호출 수정 버전)
 """
 
 import os
@@ -43,23 +43,30 @@ class LawAPIClient:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
     
-    def search(self, endpoint: str, params: Dict[str, Any]) -> Union[str, Dict]:
+    def search(self, target: str, **params) -> Dict:
         """
         검색 API 호출
         
         Args:
-            endpoint: API 엔드포인트 (lawSearch.do)
-            params: 요청 파라미터
+            target: 검색 대상 (law, prec, detc 등)
+            **params: 추가 파라미터
         
         Returns:
-            API 응답 (XML 문자열 또는 JSON 딕셔너리)
+            API 응답 (JSON 딕셔너리)
         """
-        url = f"{self.BASE_URL}/{endpoint}"
+        url = f"{self.BASE_URL}/lawSearch.do"
+        
+        # 필수 파라미터 설정
         params['OC'] = self.oc_key
+        params['target'] = target
         
         # type 파라미터가 없으면 JSON 기본값 설정
         if 'type' not in params:
-            params['type'] = 'JSON'
+            params['type'] = 'json'
+        
+        # query가 없으면 기본값 설정
+        if 'query' not in params:
+            params['query'] = '*'
         
         logger.debug(f"API 호출: {url}")
         logger.debug(f"파라미터: {params}")
@@ -71,31 +78,54 @@ class LawAPIClient:
             # Content-Type 확인
             content_type = response.headers.get('Content-Type', '')
             
-            if params['type'] == 'JSON' or 'json' in content_type.lower():
+            if params['type'].lower() == 'json' or 'json' in content_type.lower():
                 try:
                     return response.json()
                 except json.JSONDecodeError:
-                    # JSON 파싱 실패시 텍스트 반환
-                    return response.text
+                    # JSON 파싱 실패시 에러 반환
+                    logger.error(f"JSON 파싱 실패: {response.text[:200]}")
+                    return {"error": "JSON parsing failed", "totalCnt": 0}
             else:
                 return response.text
                 
         except requests.exceptions.RequestException as e:
             logger.error(f"API 요청 실패: {str(e)}")
-            raise
+            return {"error": str(e), "totalCnt": 0}
     
-    def get_detail(self, endpoint: str, params: Dict[str, Any]) -> Union[str, Dict]:
+    def get_detail(self, target: str, **params) -> Dict:
         """
         상세 조회 API 호출
         
         Args:
-            endpoint: API 엔드포인트 (lawService.do)
-            params: 요청 파라미터
+            target: 조회 대상 (law, prec, detc 등)
+            **params: 추가 파라미터
         
         Returns:
             API 응답
         """
-        return self.search(endpoint, params)
+        url = f"{self.BASE_URL}/lawService.do"
+        
+        params['OC'] = self.oc_key
+        params['target'] = target
+        
+        if 'type' not in params:
+            params['type'] = 'json'
+        
+        try:
+            response = self.session.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            
+            if params['type'].lower() == 'json':
+                try:
+                    return response.json()
+                except json.JSONDecodeError:
+                    return {"error": "JSON parsing failed"}
+            else:
+                return response.text
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"상세 조회 실패: {str(e)}")
+            return {"error": str(e)}
 
 
 class LawSearcher:
@@ -179,7 +209,7 @@ class LawSearcher:
     def search_laws(self, 
                     query: str = "",
                     search_type: int = 1,
-                    output_type: str = "JSON",
+                    output_type: str = "json",
                     display: int = 20,
                     page: int = 1,
                     sort: str = "lasc",
@@ -200,7 +230,7 @@ class LawSearcher:
         Args:
             query: 검색어 (법령명)
             search_type: 검색범위 (1: 법령명, 2: 본문검색)
-            output_type: 출력형태 (HTML/XML/JSON)
+            output_type: 출력형태 (html/xml/json)
             display: 검색 결과 개수 (최대 100)
             page: 페이지 번호
             sort: 정렬옵션
@@ -226,13 +256,12 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['LAW'],
-                'type': output_type,
                 'search': search_type,
-                'query': query,  # 필수 파라미터
+                'query': query if query else '*',
                 'display': min(display, 100),
                 'page': page,
-                'sort': sort
+                'sort': sort,
+                'type': output_type.lower()
             }
             
             # 선택적 파라미터 추가
@@ -250,19 +279,34 @@ class LawSearcher:
             
             logger.info(f"현행법령 검색 - 검색어: {query}, 페이지: {page}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'law_search')
+            # API 호출 (수정된 방식)
+            result = self.client.search(target=self.TARGETS['LAW'], **params)
+            
+            # 에러 체크
+            if isinstance(result, dict) and 'error' in result:
+                logger.error(f"API 오류: {result['error']}")
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            # 정상 응답 처리
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('law', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"현행법령 검색 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 2. 법령 본문 조회 API ====================
     
     def get_law_detail(self,
                       law_id: Optional[str] = None,
                       mst: Optional[str] = None,
-                      output_type: str = "JSON",
+                      output_type: str = "json",
                       lm: Optional[str] = None,
                       ld: Optional[int] = None,
                       ln: Optional[int] = None,
@@ -274,7 +318,7 @@ class LawSearcher:
         Args:
             law_id: 법령 ID
             mst: 법령 마스터 번호 (law_id와 둘 중 하나 필수)
-            output_type: 출력형태 (HTML/XML/JSON)
+            output_type: 출력형태 (html/xml/json)
             lm: 법령명
             ld: 공포일자
             ln: 공포번호
@@ -289,8 +333,7 @@ class LawSearcher:
         
         try:
             params = {
-                'target': self.TARGETS['LAW'],
-                'type': output_type,
+                'type': output_type.lower(),
                 'LANG': lang
             }
             
@@ -303,8 +346,12 @@ class LawSearcher:
             
             logger.info(f"법령 상세 조회 - ID: {law_id or mst}")
             
-            result = self.client.get_detail('lawService.do', params)
-            return self._parse_response(result, 'law_detail')
+            result = self.client.get_detail(target=self.TARGETS['LAW'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error']}
+            
+            return result
             
         except Exception as e:
             logger.error(f"법령 상세 조회 실패: {str(e)}")
@@ -314,7 +361,7 @@ class LawSearcher:
     
     def search_effective_laws(self,
                              query: str = "",
-                             output_type: str = "JSON",
+                             output_type: str = "json",
                              search_type: int = 1,
                              nw: Optional[str] = None,
                              lid: Optional[str] = None,
@@ -347,13 +394,12 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['EFLAW'],
-                'type': output_type,
                 'search': search_type,
-                'query': query,
+                'query': query if query else '*',
                 'display': min(display, 100),
                 'page': page,
-                'sort': sort
+                'sort': sort,
+                'type': output_type.lower()
             }
             
             if nw: params['nw'] = nw
@@ -371,12 +417,23 @@ class LawSearcher:
             
             logger.info(f"시행일 법령 검색 - 검색어: {query}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'eflaw_search')
+            result = self.client.search(target=self.TARGETS['EFLAW'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('eflaw', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"시행일 법령 검색 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 4. 시행일 법령 본문 조회 API ====================
     
@@ -384,7 +441,7 @@ class LawSearcher:
                                 law_id: Optional[str] = None,
                                 mst: Optional[str] = None,
                                 ef_yd: int = None,
-                                output_type: str = "JSON",
+                                output_type: str = "json",
                                 jo: Optional[int] = None,
                                 chr_cls_cd: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -406,8 +463,7 @@ class LawSearcher:
         
         try:
             params = {
-                'target': self.TARGETS['EFLAW'],
-                'type': output_type
+                'type': output_type.lower()
             }
             
             if law_id: params['ID'] = law_id
@@ -419,8 +475,12 @@ class LawSearcher:
             
             logger.info(f"시행일 법령 상세 조회 - ID: {law_id or mst}")
             
-            result = self.client.get_detail('lawService.do', params)
-            return self._parse_response(result, 'eflaw_detail')
+            result = self.client.get_detail(target=self.TARGETS['EFLAW'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error']}
+            
+            return result
             
         except Exception as e:
             logger.error(f"시행일 법령 상세 조회 실패: {str(e)}")
@@ -430,7 +490,7 @@ class LawSearcher:
     
     def search_law_history(self,
                           query: str = "",
-                          output_type: str = "HTML",
+                          output_type: str = "html",
                           display: int = 20,
                           page: int = 1,
                           sort: str = "lasc",
@@ -457,12 +517,11 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['LS_HISTORY'],
-                'type': output_type,
-                'query': query,
+                'query': query if query else '*',
                 'display': min(display, 100),
                 'page': page,
-                'sort': sort
+                'sort': sort,
+                'type': output_type.lower()
             }
             
             if ef_yd: params['efYd'] = ef_yd
@@ -478,7 +537,7 @@ class LawSearcher:
             
             logger.info(f"법령 연혁 목록 검색 - 검색어: {query}")
             
-            result = self.client.search('lawSearch.do', params)
+            result = self.client.search(target=self.TARGETS['LS_HISTORY'], **params)
             return self._parse_response(result, 'history_search')
             
         except Exception as e:
@@ -490,7 +549,7 @@ class LawSearcher:
     def get_law_history_detail(self,
                               law_id: Optional[str] = None,
                               mst: Optional[str] = None,
-                              output_type: str = "HTML",
+                              output_type: str = "html",
                               lm: Optional[str] = None,
                               ld: Optional[int] = None,
                               ln: Optional[int] = None,
@@ -515,8 +574,7 @@ class LawSearcher:
         
         try:
             params = {
-                'target': self.TARGETS['LS_HISTORY'],
-                'type': output_type
+                'type': output_type.lower()
             }
             
             if law_id: params['ID'] = law_id
@@ -528,7 +586,7 @@ class LawSearcher:
             
             logger.info(f"법령 연혁 상세 조회 - ID: {law_id or mst}")
             
-            result = self.client.get_detail('lawService.do', params)
+            result = self.client.get_detail(target=self.TARGETS['LS_HISTORY'], **params)
             return self._parse_response(result, 'history_detail')
             
         except Exception as e:
@@ -544,7 +602,7 @@ class LawSearcher:
                               hang: Optional[str] = None,
                               ho: Optional[str] = None,
                               mok: Optional[str] = None,
-                              output_type: str = "JSON") -> Dict[str, Any]:
+                              output_type: str = "json") -> Dict[str, Any]:
         """
         현행법령의 조항호목을 조회합니다. (API #7)
         
@@ -567,9 +625,8 @@ class LawSearcher:
         
         try:
             params = {
-                'target': self.TARGETS['LAW_JOSUB'],
-                'type': output_type,
-                'JO': jo
+                'JO': jo,
+                'type': output_type.lower()
             }
             
             if law_id: params['ID'] = law_id
@@ -580,8 +637,12 @@ class LawSearcher:
             
             logger.info(f"조항호목 조회 - 법령: {law_id or mst}, 조: {jo}")
             
-            result = self.client.get_detail('lawService.do', params)
-            return self._parse_response(result, 'article_detail')
+            result = self.client.get_detail(target=self.TARGETS['LAW_JOSUB'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error']}
+            
+            return result
             
         except Exception as e:
             logger.error(f"조항호목 조회 실패: {str(e)}")
@@ -597,7 +658,7 @@ class LawSearcher:
                                         hang: Optional[str] = None,
                                         ho: Optional[str] = None,
                                         mok: Optional[str] = None,
-                                        output_type: str = "JSON") -> Dict[str, Any]:
+                                        output_type: str = "json") -> Dict[str, Any]:
         """
         시행일법령의 조항호목을 조회합니다. (API #8)
         
@@ -621,9 +682,8 @@ class LawSearcher:
         
         try:
             params = {
-                'target': self.TARGETS['EFLAW_JOSUB'],
-                'type': output_type,
-                'JO': jo
+                'JO': jo,
+                'type': output_type.lower()
             }
             
             if law_id: params['ID'] = law_id
@@ -636,8 +696,12 @@ class LawSearcher:
             
             logger.info(f"시행일법령 조항호목 조회 - 법령: {law_id or mst}, 조: {jo}")
             
-            result = self.client.get_detail('lawService.do', params)
-            return self._parse_response(result, 'eflaw_article_detail')
+            result = self.client.get_detail(target=self.TARGETS['EFLAW_JOSUB'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error']}
+            
+            return result
             
         except Exception as e:
             logger.error(f"시행일법령 조항호목 조회 실패: {str(e)}")
@@ -648,7 +712,7 @@ class LawSearcher:
     def search_english_laws(self,
                            query: str = "*",
                            search_type: int = 1,
-                           output_type: str = "JSON",
+                           output_type: str = "json",
                            display: int = 20,
                            page: int = 1,
                            sort: str = "lasc",
@@ -676,13 +740,12 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['ELAW'],
-                'type': output_type,
                 'search': search_type,
                 'query': query,
                 'display': min(display, 100),
                 'page': page,
-                'sort': sort
+                'sort': sort,
+                'type': output_type.lower()
             }
             
             if date: params['date'] = date
@@ -698,19 +761,30 @@ class LawSearcher:
             
             logger.info(f"영문법령 검색 - 검색어: {query}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'elaw_search')
+            result = self.client.search(target=self.TARGETS['ELAW'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('elaw', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"영문법령 검색 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 10. 영문법령 본문 조회 API ====================
     
     def get_english_law_detail(self,
                               law_id: Optional[str] = None,
                               mst: Optional[str] = None,
-                              output_type: str = "JSON",
+                              output_type: str = "json",
                               lm: Optional[str] = None,
                               ld: Optional[int] = None,
                               ln: Optional[int] = None) -> Dict[str, Any]:
@@ -733,8 +807,7 @@ class LawSearcher:
         
         try:
             params = {
-                'target': self.TARGETS['ELAW'],
-                'type': output_type
+                'type': output_type.lower()
             }
             
             if law_id: params['ID'] = law_id
@@ -745,8 +818,12 @@ class LawSearcher:
             
             logger.info(f"영문법령 상세 조회 - ID: {law_id or mst}")
             
-            result = self.client.get_detail('lawService.do', params)
-            return self._parse_response(result, 'elaw_detail')
+            result = self.client.get_detail(target=self.TARGETS['ELAW'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error']}
+            
+            return result
             
         except Exception as e:
             logger.error(f"영문법령 상세 조회 실패: {str(e)}")
@@ -757,7 +834,7 @@ class LawSearcher:
     def search_law_change_history(self,
                                  reg_dt: int = None,
                                  org: Optional[str] = None,
-                                 output_type: str = "JSON",
+                                 output_type: str = "json",
                                  display: int = 20,
                                  page: int = 1,
                                  pop_yn: Optional[str] = None) -> Dict[str, Any]:
@@ -780,11 +857,10 @@ class LawSearcher:
         
         try:
             params = {
-                'target': self.TARGETS['LS_HST_INF'],
-                'type': output_type,
                 'regDt': reg_dt,
                 'display': min(display, 100),
-                'page': page
+                'page': page,
+                'type': output_type.lower()
             }
             
             if org: params['org'] = org
@@ -792,12 +868,23 @@ class LawSearcher:
             
             logger.info(f"법령 변경이력 조회 - 날짜: {reg_dt}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'change_history')
+            result = self.client.search(target=self.TARGETS['LS_HST_INF'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('lsHstInf', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"법령 변경이력 조회 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 12. 일자별 조문 개정 이력 목록 조회 API ====================
     
@@ -808,7 +895,7 @@ class LawSearcher:
                                        law_id: Optional[int] = None,
                                        jo: Optional[int] = None,
                                        org: Optional[str] = None,
-                                       output_type: str = "JSON",
+                                       output_type: str = "json",
                                        page: int = 1) -> Dict[str, Any]:
         """
         일자별 조문 개정 이력을 조회합니다. (API #12)
@@ -828,9 +915,8 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['LS_JO_HST_INF'],
-                'type': output_type,
-                'page': page
+                'page': page,
+                'type': output_type.lower()
             }
             
             if reg_dt: params['regDt'] = reg_dt
@@ -842,19 +928,30 @@ class LawSearcher:
             
             logger.info(f"조문 개정 이력 조회 - 법령: {law_id}, 조: {jo}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'article_revision')
+            result = self.client.search(target=self.TARGETS['LS_JO_HST_INF'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('lsJoHstInf', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"조문 개정 이력 조회 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 13. 조문별 변경 이력 목록 조회 API ====================
     
     def get_article_change_history(self,
                                   law_id: str,
                                   jo: int,
-                                  output_type: str = "JSON",
+                                  output_type: str = "json",
                                   display: int = 20,
                                   page: int = 1) -> Dict[str, Any]:
         """
@@ -872,18 +969,21 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['LS_JO_HST_INF'],
-                'type': output_type,
                 'ID': law_id,
                 'JO': jo,
                 'display': min(display, 100),
-                'page': page
+                'page': page,
+                'type': output_type.lower()
             }
             
             logger.info(f"조문별 변경 이력 조회 - 법령: {law_id}, 조: {jo}")
             
-            result = self.client.get_detail('lawService.do', params)
-            return self._parse_response(result, 'article_change')
+            result = self.client.get_detail(target=self.TARGETS['LS_JO_HST_INF'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error']}
+            
+            return result
             
         except Exception as e:
             logger.error(f"조문별 변경 이력 조회 실패: {str(e)}")
@@ -893,7 +993,7 @@ class LawSearcher:
     
     def search_linked_ordinances(self,
                                 query: str = "",
-                                output_type: str = "JSON",
+                                output_type: str = "json",
                                 display: int = 20,
                                 page: int = 1,
                                 sort: str = "lasc",
@@ -914,24 +1014,34 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['LNK_LS'],
-                'type': output_type,
-                'query': query,
+                'query': query if query else '*',
                 'display': min(display, 100),
                 'page': page,
-                'sort': sort
+                'sort': sort,
+                'type': output_type.lower()
             }
             
             if pop_yn: params['popYn'] = pop_yn
             
             logger.info(f"법령-자치법규 연계 검색 - 검색어: {query}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'linked_ordinances')
+            result = self.client.search(target=self.TARGETS['LNK_LS'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('lnkLs', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"연계 법령 검색 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 15. 연계 법령별 조례 조문 목록 조회 API ====================
     
@@ -940,7 +1050,7 @@ class LawSearcher:
                                  knd: Optional[str] = None,
                                  jo: Optional[int] = None,
                                  jobr: Optional[int] = None,
-                                 output_type: str = "JSON",
+                                 output_type: str = "json",
                                  display: int = 20,
                                  page: int = 1,
                                  sort: str = "lasc",
@@ -964,12 +1074,11 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['LNK_LS_ORD_JO'],
-                'type': output_type,
-                'query': query,
+                'query': query if query else '*',
                 'display': min(display, 100),
                 'page': page,
-                'sort': sort
+                'sort': sort,
+                'type': output_type.lower()
             }
             
             if knd: params['knd'] = knd
@@ -979,18 +1088,29 @@ class LawSearcher:
             
             logger.info(f"조례 조문 검색 - 검색어: {query}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'ordinance_articles')
+            result = self.client.search(target=self.TARGETS['LNK_LS_ORD_JO'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('lnkLsOrdJo', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"조례 조문 검색 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 16. 연계 법령 소관부처별 목록 조회 API ====================
     
     def search_linked_by_department(self,
                                    org: str,
-                                   output_type: str = "JSON",
+                                   output_type: str = "json",
                                    display: int = 20,
                                    page: int = 1,
                                    sort: str = "lasc",
@@ -1011,28 +1131,38 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['LNK_DEP'],
-                'type': output_type,
                 'org': org,
                 'display': min(display, 100),
                 'page': page,
-                'sort': sort
+                'sort': sort,
+                'type': output_type.lower()
             }
             
             if pop_yn: params['popYn'] = pop_yn
             
             logger.info(f"소관부처별 연계 법령 조회 - 부처: {org}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'linked_by_dept')
+            result = self.client.search(target=self.TARGETS['LNK_DEP'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('lnkDep', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"소관부처별 연계 법령 조회 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 17. 법령-자치법규 연계현황 조회 API ====================
     
-    def get_ordinance_link_status(self, output_type: str = "HTML") -> Dict[str, Any]:
+    def get_ordinance_link_status(self, output_type: str = "html") -> Dict[str, Any]:
         """
         법령-자치법규 연계현황을 조회합니다. (API #17)
         
@@ -1044,13 +1174,12 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['DR_LAW'],
-                'type': output_type
+                'type': output_type.lower()
             }
             
             logger.info("법령-자치법규 연계현황 조회")
             
-            result = self.client.search('lawSearch.do', params)
+            result = self.client.search(target=self.TARGETS['DR_LAW'], **params)
             return self._parse_response(result, 'link_status')
             
         except Exception as e:
@@ -1062,7 +1191,7 @@ class LawSearcher:
     def get_delegated_laws(self,
                           law_id: Optional[str] = None,
                           mst: Optional[str] = None,
-                          output_type: str = "JSON") -> Dict[str, Any]:
+                          output_type: str = "json") -> Dict[str, Any]:
         """
         위임 법령을 조회합니다. (API #18)
         
@@ -1079,8 +1208,7 @@ class LawSearcher:
         
         try:
             params = {
-                'target': self.TARGETS['LS_DELEGATED'],
-                'type': output_type
+                'type': output_type.lower()
             }
             
             if law_id: params['ID'] = law_id
@@ -1088,8 +1216,12 @@ class LawSearcher:
             
             logger.info(f"위임 법령 조회 - ID: {law_id or mst}")
             
-            result = self.client.get_detail('lawService.do', params)
-            return self._parse_response(result, 'delegated_laws')
+            result = self.client.get_detail(target=self.TARGETS['LS_DELEGATED'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error']}
+            
+            return result
             
         except Exception as e:
             logger.error(f"위임 법령 조회 실패: {str(e)}")
@@ -1099,7 +1231,7 @@ class LawSearcher:
     
     def search_law_structure(self,
                             query: str = "",
-                            output_type: str = "JSON",
+                            output_type: str = "json",
                             display: int = 20,
                             page: int = 1,
                             sort: str = "lasc",
@@ -1126,12 +1258,11 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['LS_STMD'],
-                'type': output_type,
-                'query': query,
+                'query': query if query else '*',
                 'display': min(display, 100),
                 'page': page,
-                'sort': sort
+                'sort': sort,
+                'type': output_type.lower()
             }
             
             if ef_yd: params['efYd'] = ef_yd
@@ -1147,19 +1278,30 @@ class LawSearcher:
             
             logger.info(f"법령 체계도 목록 검색 - 검색어: {query}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'structure_search')
+            result = self.client.search(target=self.TARGETS['LS_STMD'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('lsStmd', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"법령 체계도 목록 검색 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 20. 법령 체계도 본문 조회 API ====================
     
     def get_law_structure_detail(self,
                                 law_id: Optional[str] = None,
                                 mst: Optional[str] = None,
-                                output_type: str = "JSON",
+                                output_type: str = "json",
                                 lm: Optional[str] = None,
                                 ld: Optional[int] = None,
                                 ln: Optional[int] = None) -> Dict[str, Any]:
@@ -1182,8 +1324,7 @@ class LawSearcher:
         
         try:
             params = {
-                'target': self.TARGETS['LS_STMD'],
-                'type': output_type
+                'type': output_type.lower()
             }
             
             if law_id: params['ID'] = law_id
@@ -1194,8 +1335,12 @@ class LawSearcher:
             
             logger.info(f"법령 체계도 상세 조회 - ID: {law_id or mst}")
             
-            result = self.client.get_detail('lawService.do', params)
-            return self._parse_response(result, 'structure_detail')
+            result = self.client.get_detail(target=self.TARGETS['LS_STMD'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error']}
+            
+            return result
             
         except Exception as e:
             logger.error(f"법령 체계도 상세 조회 실패: {str(e)}")
@@ -1205,7 +1350,7 @@ class LawSearcher:
     
     def search_old_new_laws(self,
                            query: str = "",
-                           output_type: str = "JSON",
+                           output_type: str = "json",
                            display: int = 20,
                            page: int = 1,
                            sort: str = "lasc",
@@ -1232,12 +1377,11 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['OLD_AND_NEW'],
-                'type': output_type,
-                'query': query,
+                'query': query if query else '*',
                 'display': min(display, 100),
                 'page': page,
-                'sort': sort
+                'sort': sort,
+                'type': output_type.lower()
             }
             
             if ef_yd: params['efYd'] = ef_yd
@@ -1253,19 +1397,30 @@ class LawSearcher:
             
             logger.info(f"신구법 목록 검색 - 검색어: {query}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'old_new_search')
+            result = self.client.search(target=self.TARGETS['OLD_AND_NEW'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('oldAndNew', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"신구법 목록 검색 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 22. 신구법 본문 조회 API ====================
     
     def get_old_new_law_detail(self,
                               law_id: Optional[str] = None,
                               mst: Optional[str] = None,
-                              output_type: str = "JSON",
+                              output_type: str = "json",
                               lm: Optional[str] = None,
                               ld: Optional[int] = None,
                               ln: Optional[int] = None) -> Dict[str, Any]:
@@ -1288,8 +1443,7 @@ class LawSearcher:
         
         try:
             params = {
-                'target': self.TARGETS['OLD_AND_NEW'],
-                'type': output_type
+                'type': output_type.lower()
             }
             
             if law_id: params['ID'] = law_id
@@ -1300,8 +1454,12 @@ class LawSearcher:
             
             logger.info(f"신구법 상세 조회 - ID: {law_id or mst}")
             
-            result = self.client.get_detail('lawService.do', params)
-            return self._parse_response(result, 'old_new_detail')
+            result = self.client.get_detail(target=self.TARGETS['OLD_AND_NEW'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error']}
+            
+            return result
             
         except Exception as e:
             logger.error(f"신구법 상세 조회 실패: {str(e)}")
@@ -1311,7 +1469,7 @@ class LawSearcher:
     
     def search_three_way_comparison(self,
                                    query: str = "",
-                                   output_type: str = "JSON",
+                                   output_type: str = "json",
                                    display: int = 20,
                                    page: int = 1,
                                    sort: str = "lasc",
@@ -1338,12 +1496,11 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['THD_CMP'],
-                'type': output_type,
-                'query': query,
+                'query': query if query else '*',
                 'display': min(display, 100),
                 'page': page,
-                'sort': sort
+                'sort': sort,
+                'type': output_type.lower()
             }
             
             if ef_yd: params['efYd'] = ef_yd
@@ -1359,12 +1516,23 @@ class LawSearcher:
             
             logger.info(f"3단 비교 목록 검색 - 검색어: {query}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'three_way_search')
+            result = self.client.search(target=self.TARGETS['THD_CMP'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('thdCmp', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"3단 비교 목록 검색 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 24. 3단 비교 본문 조회 API ====================
     
@@ -1372,7 +1540,7 @@ class LawSearcher:
                                        law_id: Optional[str] = None,
                                        mst: Optional[str] = None,
                                        knd: int = 1,
-                                       output_type: str = "JSON",
+                                       output_type: str = "json",
                                        lm: Optional[str] = None,
                                        ld: Optional[int] = None,
                                        ln: Optional[int] = None) -> Dict[str, Any]:
@@ -1396,9 +1564,8 @@ class LawSearcher:
         
         try:
             params = {
-                'target': self.TARGETS['THD_CMP'],
-                'type': output_type,
-                'knd': knd
+                'knd': knd,
+                'type': output_type.lower()
             }
             
             if law_id: params['ID'] = law_id
@@ -1409,8 +1576,12 @@ class LawSearcher:
             
             logger.info(f"3단 비교 상세 조회 - ID: {law_id or mst}, 종류: {knd}")
             
-            result = self.client.get_detail('lawService.do', params)
-            return self._parse_response(result, 'three_way_detail')
+            result = self.client.get_detail(target=self.TARGETS['THD_CMP'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error']}
+            
+            return result
             
         except Exception as e:
             logger.error(f"3단 비교 상세 조회 실패: {str(e)}")
@@ -1421,7 +1592,7 @@ class LawSearcher:
     def search_law_abbreviations(self,
                                 std_dt: Optional[int] = None,
                                 end_dt: Optional[int] = None,
-                                output_type: str = "JSON") -> Dict[str, Any]:
+                                output_type: str = "json") -> Dict[str, Any]:
         """
         법령명 약칭을 조회합니다. (API #25)
         
@@ -1435,8 +1606,7 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['LS_ABRV'],
-                'type': output_type
+                'type': output_type.lower()
             }
             
             if std_dt: params['stdDt'] = std_dt
@@ -1444,12 +1614,22 @@ class LawSearcher:
             
             logger.info("법령명 약칭 조회")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'abbreviations')
+            result = self.client.search(target=self.TARGETS['LS_ABRV'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'results': result.get('lsAbrv', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"법령명 약칭 조회 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 26. 삭제 데이터 목록 조회 API ====================
     
@@ -1458,7 +1638,7 @@ class LawSearcher:
                            del_dt: Optional[int] = None,
                            frm_dt: Optional[int] = None,
                            to_dt: Optional[int] = None,
-                           output_type: str = "JSON",
+                           output_type: str = "json",
                            display: int = 20,
                            page: int = 1) -> Dict[str, Any]:
         """
@@ -1478,10 +1658,9 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['DEL_HST'],
-                'type': output_type,
                 'display': min(display, 100),
-                'page': page
+                'page': page,
+                'type': output_type.lower()
             }
             
             if knd: params['knd'] = knd
@@ -1491,18 +1670,29 @@ class LawSearcher:
             
             logger.info(f"삭제 데이터 조회 - 종류: {knd}, 날짜: {del_dt}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'deleted_data')
+            result = self.client.search(target=self.TARGETS['DEL_HST'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('delHst', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"삭제 데이터 조회 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 27. 한눈보기 목록 조회 API ====================
     
     def search_oneview(self,
                        query: str = "",
-                       output_type: str = "JSON",
+                       output_type: str = "json",
                        display: int = 20,
                        page: int = 1) -> Dict[str, Any]:
         """
@@ -1519,27 +1709,37 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['ONEVIEW'],
-                'type': output_type,
-                'query': query,
+                'query': query if query else '*',
                 'display': min(display, 100),
-                'page': page
+                'page': page,
+                'type': output_type.lower()
             }
             
             logger.info(f"한눈보기 목록 검색 - 검색어: {query}")
             
-            result = self.client.search('lawSearch.do', params)
-            return self._parse_response(result, 'oneview_search')
+            result = self.client.search(target=self.TARGETS['ONEVIEW'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error'], 'totalCnt': 0, 'results': []}
+            
+            if isinstance(result, dict):
+                return {
+                    'totalCnt': result.get('totalCnt', 0),
+                    'page': result.get('page', page),
+                    'results': result.get('oneview', [])
+                }
+            
+            return {'error': 'Invalid response', 'totalCnt': 0, 'results': []}
             
         except Exception as e:
             logger.error(f"한눈보기 목록 검색 실패: {str(e)}")
-            return {'error': str(e), 'results': []}
+            return {'error': str(e), 'totalCnt': 0, 'results': []}
     
     # ==================== 28. 한눈보기 본문 조회 API ====================
     
     def get_oneview_detail(self,
                           mst: str,
-                          output_type: str = "JSON",
+                          output_type: str = "json",
                           lm: Optional[str] = None,
                           ld: Optional[int] = None,
                           ln: Optional[int] = None,
@@ -1560,9 +1760,8 @@ class LawSearcher:
         """
         try:
             params = {
-                'target': self.TARGETS['ONEVIEW'],
-                'type': output_type,
-                'MST': mst
+                'MST': mst,
+                'type': output_type.lower()
             }
             
             if lm: params['LM'] = lm
@@ -1572,8 +1771,12 @@ class LawSearcher:
             
             logger.info(f"한눈보기 상세 조회 - MST: {mst}")
             
-            result = self.client.get_detail('lawService.do', params)
-            return self._parse_response(result, 'oneview_detail')
+            result = self.client.get_detail(target=self.TARGETS['ONEVIEW'], **params)
+            
+            if isinstance(result, dict) and 'error' in result:
+                return {'error': result['error']}
+            
+            return result
             
         except Exception as e:
             logger.error(f"한눈보기 상세 조회 실패: {str(e)}")
