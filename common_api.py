@@ -2,6 +2,7 @@
 common_api.py - 공통 API 클라이언트 모듈 (확장 버전)
 법제처 API와 OpenAI API 통합 관리
 모든 모듈의 API 호출을 지원하는 완전한 구현
+Python 3.13 호환성 수정 버전
 """
 
 import re
@@ -163,15 +164,18 @@ class LawAPIClient:
             cache_ttl: 캐시 유효시간 (초)
         """
         self.oc_key = oc_key or os.getenv('LAW_API_KEY', '')
+        self.test_mode = False
         
         # API 키 검증 및 로깅
         if not self.oc_key:
             logger.warning("OC 키가 설정되지 않았습니다. 일부 API 호출이 실패할 수 있습니다.")
             self.oc_key = 'test'  # 테스트용 기본값
+            self.test_mode = True
         else:
-            # API 키 형식 확인
-            if len(self.oc_key) < 10:
-                logger.warning(f"OC 키가 너무 짧습니다: {len(self.oc_key)}자")
+            # API 키 형식 확인 - 실제 키는 보통 20자 이상
+            if len(self.oc_key) < 20:
+                logger.warning(f"OC 키가 테스트 키로 보입니다: 길이 {len(self.oc_key)}자")
+                self.test_mode = True
             else:
                 logger.info(f"OC 키 설정 완료: {self.oc_key[:4]}****{self.oc_key[-4:]}")
         
@@ -183,7 +187,7 @@ class LawAPIClient:
         self.retry_count = 3
         self.retry_delay = 1
         
-        logger.info(f"LawAPIClient 초기화 완료 - 캐시 TTL: {cache_ttl}초, 재시도: {self.retry_count}회")
+        logger.info(f"LawAPIClient 초기화 완료 - 캐시 TTL: {cache_ttl}초, 재시도: {self.retry_count}회, 테스트모드: {self.test_mode}")
     
     def search(self, target: str = None, **params) -> Dict[str, Any]:
         """
@@ -304,28 +308,31 @@ class LawAPIClient:
         # URL 설정
         url = f"{self.BASE_URL}/lawService.do"
         
+        # None 값 제거
+        filtered_params = {k: v for k, v in params.items() if v is not None}
+        
         # 필수 파라미터 설정
-        params['OC'] = self.oc_key
-        params['target'] = target
+        filtered_params['OC'] = self.oc_key
+        filtered_params['target'] = target
         
         # type 파라미터를 XML로 강제 설정 (중요한 변경!)
-        params['type'] = 'XML'  # JSON 대신 XML 사용
+        filtered_params['type'] = 'XML'  # JSON 대신 XML 사용
         
         # id나 ID 파라미터 처리
-        if 'id' in params:
-            params['ID'] = params.pop('id')
+        if 'id' in filtered_params:
+            filtered_params['ID'] = filtered_params.pop('id')
         
         logger.info(f"상세 조회: {url}")
-        logger.debug(f"파라미터: {params}")
+        logger.debug(f"파라미터: {filtered_params}")
         
         # 캐시 확인
-        cache_key = self.cache._generate_key(f"{target}_detail", params)
+        cache_key = self.cache._generate_key(f"{target}_detail", filtered_params)
         cached_data = self.cache.get(cache_key)
         if cached_data:
             return cached_data
         
         try:
-            response = self.session.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=filtered_params, timeout=30)
             response.raise_for_status()
             
             # XML 응답 파싱 (수정된 부분)
@@ -391,7 +398,13 @@ class LawAPIClient:
                 'ordin': 'ordin',
                 'trty': 'trty',
                 'eflaw': 'eflaw',
-                'elaw': 'elaw'
+                'elaw': 'elaw',
+                'lsStmd': 'lsStmd',
+                'oldAndNew': 'oldAndNew',
+                'thdCmp': 'thdCmp',
+                'lsHistory': 'lsHistory',
+                'lsHstInf': 'lsHstInf',
+                'lsJoHstInf': 'lsJoHstInf'
             }
             
             # 결과 태그 결정
@@ -399,6 +412,16 @@ class LawAPIClient:
             
             # 결과 추출
             items = root.findall(f'.//{tag_name}')
+            
+            # 결과가 없으면 다른 가능한 태그들도 시도
+            if not items:
+                possible_tags = ['item', 'law', 'prec', 'detc', 'expc', 'decc', 
+                                'admrul', 'ordin', 'trty', 'result']
+                for possible_tag in possible_tags:
+                    items = root.findall(f'.//{possible_tag}')
+                    if items:
+                        break
+            
             for item in items:
                 item_dict = {}
                 for child in item:
@@ -428,6 +451,7 @@ class LawAPIClient:
             logger.error(f"XML 파싱 오류: {str(e)}")
             logger.debug(f"파싱 실패한 XML (처음 500자): {xml_text[:500]}")
             
+            # 빈 결과 반환 (에러 상태로)
             return {
                 'error': f'XML 파싱 오류: {str(e)}',
                 'raw': xml_text[:500],
@@ -507,7 +531,7 @@ class LawAPIClient:
 class OpenAIHelper:
     """OpenAI API 헬퍼 클래스 - 확장된 기능"""
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "o3"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
         """
         초기화
         
@@ -578,7 +602,7 @@ class OpenAIHelper:
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt}  # 수정: prompt -> user_prompt
                 ],
                 temperature=0.3,
                 max_completion_tokens=1500
@@ -605,7 +629,7 @@ class OpenAIHelper:
             return "OpenAI API가 설정되지 않았습니다."
         
         try:
-            prompt = f"""다음 두 법령을 비교 분석해주세요:
+            comparison_prompt = f"""다음 두 법령을 비교 분석해주세요:
             
             [구법]
             {old_law[:2000]}
@@ -623,7 +647,7 @@ class OpenAIHelper:
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "법령 비교 전문가입니다."},
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": comparison_prompt}  # 수정: prompt -> comparison_prompt
                 ],
                 temperature=0.3,
                 max_completion_tokens=1500
@@ -649,7 +673,7 @@ class OpenAIHelper:
             return "OpenAI API가 설정되지 않았습니다."
         
         try:
-            prompt = f"""다음 위원회 결정문을 분석해주세요:
+            decision_prompt = f"""다음 위원회 결정문을 분석해주세요:
             
             위원회: {decision.get('committee_name', '')}
             사건명: {decision.get('title', '')}
@@ -666,7 +690,7 @@ class OpenAIHelper:
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "행정법 전문가입니다."},
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": decision_prompt}  # 수정: prompt -> decision_prompt
                 ],
                 temperature=0.3,
                 max_completion_tokens=1500
@@ -731,7 +755,7 @@ class OpenAIHelper:
         }
         
         try:
-            prompt = f"""{templates.get(template_type, '문서를 작성해주세요.')}
+            document_prompt = f"""{templates.get(template_type, '문서를 작성해주세요.')}
             
             관련 정보:
             {json.dumps(context, ensure_ascii=False, indent=2)}
@@ -742,7 +766,7 @@ class OpenAIHelper:
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "법률 문서 작성 전문가입니다."},
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": document_prompt}  # 수정: prompt -> document_prompt
                 ],
                 temperature=0.5,
                 max_completion_tokens=2000
