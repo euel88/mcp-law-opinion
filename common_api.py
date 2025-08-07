@@ -377,7 +377,7 @@ class LawAPIClient:
     
     def _parse_xml_response(self, xml_text: str, target: str) -> Dict[str, Any]:
         """
-        XML 응답을 파싱하여 JSON 형태로 변환
+        XML 응답을 파싱하여 JSON 형태로 변환 (개선된 버전)
         
         Args:
             xml_text: XML 응답 텍스트
@@ -387,7 +387,19 @@ class LawAPIClient:
             파싱된 결과
         """
         try:
-            root = ET.fromstring(xml_text)
+            # BOM 제거
+            if xml_text.startswith('\ufeff'):
+                xml_text = xml_text[1:]
+            
+            # XML 헤더가 없으면 추가
+            if not xml_text.strip().startswith('<?xml'):
+                xml_text = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_text
+            
+            # 특수문자 제거
+            xml_text = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', xml_text)
+            
+            # XML 파싱
+            root = ET.fromstring(xml_text.encode('utf-8'))
             
             # 에러 체크
             error_msg = root.findtext('.//errorMsg')
@@ -424,29 +436,41 @@ class LawAPIClient:
                 item_dict = {}
                 for child in item:
                     if child.text:
-                        item_dict[child.tag] = child.text
+                        item_dict[child.tag] = child.text.strip()
+                    # 하위 요소가 있는 경우 처리
+                    elif len(child) > 0:
+                        sub_dict = {}
+                        for subchild in child:
+                            if subchild.text:
+                                sub_dict[subchild.tag] = subchild.text.strip()
+                        if sub_dict:
+                            item_dict[child.tag] = sub_dict
+                
                 if item_dict:
                     result['results'].append(item_dict)
             
-            # 타겟별 결과 키 설정
-            if target == 'law':
-                result['law'] = result['results']
-            elif target == 'prec':
-                result['prec'] = result['results']
-            elif target == 'detc':
-                result['detc'] = result['results']
-            elif target == 'expc':
-                result['expc'] = result['results']
-            elif target == 'decc':
-                result['decc'] = result['results']
+            # 타겟별 결과 키 설정 (호환성 유지)
+            if target in result_tags:
+                result[target] = result['results']
+            
+            logger.info(f"XML 파싱 완료 - target: {target}, 결과: {len(result['results'])}건")
             
             return result
             
         except ET.ParseError as e:
             logger.error(f"XML 파싱 오류: {str(e)}")
+            logger.debug(f"파싱 실패한 XML (처음 500자): {xml_text[:500]}")
+            
             return {
                 'error': f'XML 파싱 오류: {str(e)}',
                 'raw': xml_text[:500],
+                'totalCnt': 0,
+                'results': []
+            }
+        except Exception as e:
+            logger.error(f"예상치 못한 오류: {str(e)}")
+            return {
+                'error': f'오류: {str(e)}',
                 'totalCnt': 0,
                 'results': []
             }
