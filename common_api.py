@@ -61,7 +61,7 @@ class CacheManager:
 class LawAPIClient:
     """법제처 API 클라이언트 - 모든 API 엔드포인트 지원"""
     
-    BASE_URL = "http://www.law.go.kr/DRF"
+    BASE_URL = "https://www.law.go.kr/DRF"
     
     # 지원하는 모든 타겟 타입
     TARGETS = {
@@ -161,7 +161,10 @@ class LawAPIClient:
             oc_key: 법제처 API 키 (없으면 환경변수에서 읽음)
             cache_ttl: 캐시 유효시간 (초)
         """
-        self.oc_key = oc_key or os.getenv('LAW_API_KEY', 'test')
+        self.oc_key = oc_key or os.getenv('LAW_API_KEY', '')
+        if not self.oc_key:
+            logger.warning("OC 키가 설정되지 않았습니다. 일부 API 호출이 실패할 수 있습니다.")
+            self.oc_key = 'test'  # 테스트용 기본값
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
