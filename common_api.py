@@ -1,6 +1,7 @@
 """
-공통 API 클라이언트 모듈
+common_api.py - 공통 API 클라이언트 모듈 (확장 버전)
 법제처 API와 OpenAI API 통합 관리
+모든 모듈의 API 호출을 지원하는 완전한 구현
 """
 
 import os
@@ -12,12 +13,16 @@ import xml.etree.ElementTree as ET
 from typing import Dict, Any, Optional, Union, List
 from datetime import datetime, timedelta
 from functools import lru_cache
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 import logging
 
 # 로깅 설정
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
 
 class CacheManager:
     """간단한 메모리 캐시 관리자"""
@@ -54,9 +59,99 @@ class CacheManager:
 
 
 class LawAPIClient:
-    """법제처 API 클라이언트"""
+    """법제처 API 클라이언트 - 모든 API 엔드포인트 지원"""
     
     BASE_URL = "http://www.law.go.kr/DRF"
+    
+    # 지원하는 모든 타겟 타입
+    TARGETS = {
+        # 법령 관련
+        'law': '현행법령',
+        'eflaw': '시행일법령',
+        'elaw': '영문법령',
+        'lawjosub': '현행법령 조항호목',
+        'eflawjosub': '시행일법령 조항호목',
+        'lsHistory': '법령 연혁',
+        'lsHstInf': '법령 변경이력',
+        'lsJoHstInf': '조문별 변경이력',
+        'oldAndNew': '신구법 비교',
+        'lsStmd': '법령 체계도',
+        'thdCmp': '3단 비교',
+        'lsDelegated': '위임 법령',
+        'lnkLs': '법령-자치법규 연계',
+        'lnkLsOrdJo': '법령별 조례 조문',
+        'lnkDep': '소관부처별 연계',
+        'drlaw': '법령-자치법규 연계현황',
+        'lsAbrv': '법령명 약칭',
+        'delHst': '삭제 데이터',
+        'oneview': '한눈보기',
+        
+        # 판례/심판례
+        'prec': '판례',
+        'detc': '헌재결정례',
+        'expc': '법령해석례',
+        'decc': '행정심판례',
+        
+        # 행정규칙/자치법규
+        'admrul': '행정규칙',
+        'ordin': '자치법규',
+        
+        # 조약
+        'trty': '조약',
+        
+        # 별표서식
+        'licbyl': '법령 별표서식',
+        'admbyl': '행정규칙 별표서식',
+        'ordinbyl': '자치법규 별표서식',
+        
+        # 학칙/공단/공공기관
+        'school': '대학 학칙',
+        'public': '지방공사공단 규정',
+        'pi': '공공기관 규정',
+        
+        # 법령용어
+        'lstrm': '법령용어',
+        'lstrmAI': '법령정보지식베이스 법령용어',
+        'dlytrm': '일상용어',
+        'lstrmRlt': '법령용어 관계',
+        'dlytrmRlt': '일상용어 관계',
+        'lstrmRltJo': '법령용어-조문 연계',
+        'joRltLstrm': '조문-법령용어 연계',
+        'lsRlt': '관련법령',
+        
+        # 맞춤형 분류
+        'couseLs': '맞춤형 법령',
+        'couseAdmrul': '맞춤형 행정규칙',
+        'couseOrdin': '맞춤형 자치법규',
+        
+        # 위원회 결정문 (14개)
+        'ppc': '개인정보보호위원회',
+        'eiac': '고용보험심사위원회',
+        'ftc': '공정거래위원회',
+        'acr': '국민권익위원회',
+        'fsc': '금융위원회',
+        'nlrc': '노동위원회',
+        'kcc': '방송통신위원회',
+        'iaciac': '산업재해보상보험재심사위원회',
+        'oclt': '중앙토지수용위원회',
+        'ecc': '중앙환경분쟁조정위원회',
+        'sfc': '증권선물위원회',
+        'nhrck': '국가인권위원회',
+        
+        # 부처별 법령해석
+        'moelCgmExpc': '고용노동부 법령해석',
+        'molitCgmExpc': '국토교통부 법령해석',
+        'moefCgmExpc': '기획재정부 법령해석',
+        'mofCgmExpc': '해양수산부 법령해석',
+        'moisCgmExpc': '행정안전부 법령해석',
+        'meCgmExpc': '환경부 법령해석',
+        'kcsCgmExpc': '관세청 법령해석',
+        'ntsCgmExpc': '국세청 법령해석',
+        
+        # 특별행정심판재결례
+        'ttSpecialDecc': '조세심판원',
+        'kmstSpecialDecc': '해양안전심판원'
+    }
     
     def __init__(self, oc_key: Optional[str] = None, cache_ttl: int = 3600):
         """
@@ -68,211 +163,195 @@ class LawAPIClient:
         """
         self.oc_key = oc_key or os.getenv('LAW_API_KEY', 'test')
         self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
         self.cache = CacheManager(ttl_seconds=cache_ttl)
         self.retry_count = 3
         self.retry_delay = 1
     
-    def _request(self, endpoint: str, params: Dict[str, Any], use_cache: bool = True) -> Dict[str, Any]:
-        """
-        API 요청 실행 (재시도 로직 포함)
-        
-        Args:
-            endpoint: API 엔드포인트
-            params: 요청 파라미터
-            use_cache: 캐시 사용 여부
-            
-        Returns:
-            파싱된 응답 데이터
-        """
-        # 캐시 확인
-        if use_cache:
-            cache_key = self.cache._generate_key(endpoint, params)
-            cached_data = self.cache.get(cache_key)
-            if cached_data:
-                return cached_data
-        
-        # OC 파라미터 추가
-        params['OC'] = self.oc_key
-        
-        # 재시도 로직
-        last_error = None
-        for attempt in range(self.retry_count):
-            try:
-                url = f"{self.BASE_URL}{endpoint}"
-                logger.info(f"API Request: {url} (Attempt {attempt + 1})")
-                
-                response = self.session.get(url, params=params, timeout=30)
-                response.raise_for_status()
-                
-                # 응답 파싱
-                content_type = response.headers.get('Content-Type', '')
-                if 'xml' in content_type or params.get('type', '').upper() == 'XML':
-                    result = self.parse_xml_response(response.text)
-                elif 'json' in content_type or params.get('type', '').upper() == 'JSON':
-                    result = self.parse_json_response(response.text)
-                else:
-                    # 기본적으로 XML로 처리
-                    result = self.parse_xml_response(response.text)
-                
-                # 캐시 저장
-                if use_cache:
-                    self.cache.set(cache_key, result)
-                
-                return result
-                
-            except requests.exceptions.RequestException as e:
-                last_error = e
-                logger.warning(f"Request failed (Attempt {attempt + 1}): {e}")
-                if attempt < self.retry_count - 1:
-                    time.sleep(self.retry_delay * (attempt + 1))
-                continue
-        
-        raise Exception(f"API request failed after {self.retry_count} attempts: {last_error}")
-    
-    def search(self, target: str, query: str = None, **params) -> Dict[str, Any]:
+    def search(self, endpoint: str, params: Dict[str, Any]) -> Union[str, Dict]:
         """
         검색 API 호출
         
         Args:
-            target: 검색 대상 (law, prec, expc 등)
-            query: 검색어
-            **params: 추가 파라미터
-            
+            endpoint: API 엔드포인트 (lawSearch.do)
+            params: 요청 파라미터
+        
         Returns:
-            검색 결과
+            API 응답 (XML 문자열 또는 JSON 딕셔너리)
         """
-        endpoint = "/lawSearch.do"
+        url = f"{self.BASE_URL}/{endpoint}"
+        params['OC'] = self.oc_key
         
-        request_params = {
-            'target': target,
-            'type': params.pop('type', 'JSON'),
-            'display': params.pop('display', 20),
-            'page': params.pop('page', 1)
-        }
+        # type 파라미터가 없으면 JSON 기본값 설정
+        if 'type' not in params:
+            params['type'] = 'JSON'
         
-        if query:
-            request_params['query'] = query
+        logger.debug(f"API 호출: {url}")
+        logger.debug(f"파라미터: {params}")
         
-        request_params.update(params)
+        # 캐시 확인
+        cache_key = self.cache._generate_key(endpoint, params)
+        cached_data = self.cache.get(cache_key)
+        if cached_data:
+            return cached_data
         
-        return self._request(endpoint, request_params)
+        try:
+            response = self.session.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            
+            # Content-Type 확인
+            content_type = response.headers.get('Content-Type', '')
+            
+            if params['type'] == 'JSON' or 'json' in content_type.lower():
+                try:
+                    result = response.json()
+                except json.JSONDecodeError:
+                    # JSON 파싱 실패시 텍스트 반환
+                    result = response.text
+            else:
+                result = response.text
+            
+            # 캐시 저장
+            self.cache.set(cache_key, result)
+            
+            return result
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API 요청 실패: {str(e)}")
+            raise
     
-    def get_detail(self, target: str, id: str = None, **params) -> Dict[str, Any]:
+    def get_detail(self, endpoint: str, params: Dict[str, Any]) -> Union[str, Dict]:
         """
         상세 조회 API 호출
         
         Args:
-            target: 조회 대상
-            id: 문서 ID
-            **params: 추가 파라미터
-            
+            endpoint: API 엔드포인트 (lawService.do)
+            params: 요청 파라미터
+        
         Returns:
-            상세 정보
+            API 응답
         """
-        endpoint = "/lawService.do"
-        
-        request_params = {
-            'target': target,
-            'type': params.pop('type', 'JSON')
-        }
-        
-        if id:
-            # ID 또는 MST 파라미터 처리
-            if target in ['law', 'eflaw', 'lsHistory']:
-                request_params['MST'] = id
-            else:
-                request_params['ID'] = id
-        
-        request_params.update(params)
-        
-        return self._request(endpoint, request_params)
+        return self.search(endpoint, params)
     
-    def parse_xml_response(self, xml_text: str) -> Dict[str, Any]:
+    def parse_response(self, response: Any, response_type: str) -> Dict[str, Any]:
         """
-        XML 응답 파싱
+        API 응답을 파싱하여 통일된 형태로 반환
         
         Args:
-            xml_text: XML 텍스트
-            
+            response: API 응답 (XML 문자열 또는 JSON 딕셔너리)
+            response_type: 응답 유형
+        
         Returns:
-            파싱된 데이터
+            파싱된 결과
         """
         try:
-            root = ET.fromstring(xml_text)
-            return self._xml_to_dict(root)
-        except ET.ParseError as e:
-            logger.error(f"XML parsing error: {e}")
-            return {"error": "XML parsing failed", "raw": xml_text[:500]}
-    
-    def parse_json_response(self, json_text: str) -> Dict[str, Any]:
-        """
-        JSON 응답 파싱
-        
-        Args:
-            json_text: JSON 텍스트
+            # JSON 응답 처리
+            if isinstance(response, dict):
+                # 에러 체크
+                if 'error' in response:
+                    return {'error': response['error'], 'results': []}
+                
+                # 기본 구조로 변환
+                return {
+                    'type': response_type,
+                    'totalCnt': response.get('totalCnt', 0),
+                    'page': response.get('page', 1),
+                    'results': response.get('law', response.get('items', response.get('results', [])))
+                }
             
-        Returns:
-            파싱된 데이터
-        """
-        try:
-            return json.loads(json_text)
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing error: {e}")
-            return {"error": "JSON parsing failed", "raw": json_text[:500]}
-    
-    def _xml_to_dict(self, element) -> Union[Dict, List, str]:
-        """
-        XML Element를 딕셔너리로 변환
-        
-        Args:
-            element: XML Element
+            # XML 응답 처리
+            elif isinstance(response, str):
+                # HTML 응답인 경우 그대로 반환
+                if response.strip().startswith('<!DOCTYPE') or response.strip().startswith('<html'):
+                    return {
+                        'type': response_type,
+                        'html': response
+                    }
+                
+                # XML 파싱
+                try:
+                    root = ET.fromstring(response)
+                    
+                    # 에러 체크
+                    error_msg = root.findtext('.//errorMsg')
+                    if error_msg:
+                        return {'error': error_msg, 'results': []}
+                    
+                    # 기본 정보 추출
+                    total_cnt = root.findtext('.//totalCnt', '0')
+                    page = root.findtext('.//page', '1')
+                    
+                    # 결과 추출 (다양한 태그명 처리)
+                    items = []
+                    for tag_name in ['law', 'item', 'eflaw', 'elaw', 'oldAndNew', 'thdCmp', 
+                                     'prec', 'detc', 'expc', 'decc', 'trty', 'admrul', 'ordin']:
+                        items.extend(root.findall(f'.//{tag_name}'))
+                    
+                    # 결과 파싱
+                    results = []
+                    for item in items:
+                        result_dict = {}
+                        for child in item:
+                            if child.text:
+                                result_dict[child.tag] = child.text
+                        if result_dict:
+                            results.append(result_dict)
+                    
+                    return {
+                        'type': response_type,
+                        'totalCnt': int(total_cnt) if total_cnt.isdigit() else 0,
+                        'page': int(page) if page.isdigit() else 1,
+                        'results': results
+                    }
+                    
+                except ET.ParseError as e:
+                    logger.error(f"XML 파싱 오류: {str(e)}")
+                    return {
+                        'type': response_type,
+                        'error': f'XML 파싱 오류: {str(e)}',
+                        'raw': response[:500]  # 디버깅용
+                    }
             
-        Returns:
-            변환된 딕셔너리
-        """
-        if element is None:
-            return None
-        
-        # 자식 요소가 없으면 텍스트 반환
-        if not list(element):
-            return element.text
-        
-        result = {}
-        
-        # 자식 요소들을 딕셔너리로 변환
-        for child in element:
-            child_data = self._xml_to_dict(child)
-            
-            # 같은 태그가 여러 개 있으면 리스트로 처리
-            if child.tag in result:
-                if not isinstance(result[child.tag], list):
-                    result[child.tag] = [result[child.tag]]
-                result[child.tag].append(child_data)
             else:
-                result[child.tag] = child_data
-        
-        # 속성이 있으면 추가
-        if element.attrib:
-            result['@attributes'] = element.attrib
-        
-        # 텍스트가 있으면 추가
-        if element.text and element.text.strip():
-            result['@text'] = element.text.strip()
-        
-        return result
+                return {
+                    'type': response_type,
+                    'error': f'알 수 없는 응답 형식: {type(response)}',
+                    'results': []
+                }
+                
+        except Exception as e:
+            logger.error(f"응답 파싱 중 오류: {str(e)}")
+            return {
+                'type': response_type,
+                'error': str(e),
+                'results': []
+            }
+    
+    def get_supported_targets(self) -> Dict[str, str]:
+        """지원하는 모든 타겟 타입 반환"""
+        return self.TARGETS.copy()
+    
+    def validate_target(self, target: str) -> bool:
+        """타겟 타입 유효성 검사"""
+        return target in self.TARGETS
 
 
 class OpenAIHelper:
-    """OpenAI API 헬퍼 클래스"""
+    """OpenAI API 헬퍼 클래스 - 확장된 기능"""
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
         """
         초기화
         
         Args:
             api_key: OpenAI API 키 (없으면 환경변수에서 읽음)
+            model: 사용할 모델 (기본값: gpt-4o-mini)
         """
         self.api_key = api_key or os.getenv('OPENAI_API_KEY')
+        self.model = model
+        
         if not self.api_key:
             logger.warning("OpenAI API key not found. AI features will be disabled.")
             self.enabled = False
@@ -284,6 +363,10 @@ class OpenAIHelper:
             except ImportError:
                 logger.error("OpenAI library not installed. Run: pip install openai")
                 self.enabled = False
+    
+    def set_model(self, model: str):
+        """모델 변경"""
+        self.model = model
     
     def analyze_legal_text(self, query: str, context: Dict[str, Any]) -> Optional[str]:
         """
@@ -310,7 +393,9 @@ class OpenAIHelper:
             1. 핵심 답변
             2. 법적 근거
             3. 관련 판례/해석
-            4. 추가 고려사항"""
+            4. 추가 고려사항
+            
+            중요: 제공된 검색 결과만을 인용하고, 없는 내용은 만들지 마세요."""
             
             user_prompt = f"""
             질문: {query}
@@ -322,7 +407,7 @@ class OpenAIHelper:
             """
             
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -336,6 +421,94 @@ class OpenAIHelper:
         except Exception as e:
             logger.error(f"OpenAI API error: {e}")
             return f"AI 분석 중 오류가 발생했습니다: {str(e)}"
+    
+    def compare_laws(self, old_law: str, new_law: str) -> Optional[str]:
+        """
+        신구법 비교 분석
+        
+        Args:
+            old_law: 구법 내용
+            new_law: 신법 내용
+            
+        Returns:
+            비교 분석 결과
+        """
+        if not self.enabled:
+            return "OpenAI API가 설정되지 않았습니다."
+        
+        try:
+            prompt = f"""다음 두 법령을 비교 분석해주세요:
+            
+            [구법]
+            {old_law[:2000]}
+            
+            [신법]
+            {new_law[:2000]}
+            
+            다음 관점에서 분석해주세요:
+            1. 주요 변경사항
+            2. 삭제된 내용
+            3. 추가된 내용
+            4. 변경의 의미와 영향"""
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "법령 비교 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=1500
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            logger.error(f"Law comparison error: {e}")
+            return f"법령 비교 중 오류가 발생했습니다: {str(e)}"
+    
+    def analyze_committee_decision(self, decision: Dict[str, Any]) -> Optional[str]:
+        """
+        위원회 결정문 분석
+        
+        Args:
+            decision: 위원회 결정문 정보
+            
+        Returns:
+            분석 결과
+        """
+        if not self.enabled:
+            return "OpenAI API가 설정되지 않았습니다."
+        
+        try:
+            prompt = f"""다음 위원회 결정문을 분석해주세요:
+            
+            위원회: {decision.get('committee_name', '')}
+            사건명: {decision.get('title', '')}
+            주문: {decision.get('order', '')}
+            이유: {decision.get('reason', '')}
+            
+            다음을 분석해주세요:
+            1. 핵심 쟁점
+            2. 위원회의 판단 기준
+            3. 결정의 의미
+            4. 유사 사례에 대한 시사점"""
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "행정법 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=1500
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            logger.error(f"Committee decision analysis error: {e}")
+            return f"위원회 결정문 분석 중 오류가 발생했습니다: {str(e)}"
     
     def summarize_law(self, text: str, max_length: int = 500) -> Optional[str]:
         """
@@ -353,7 +526,7 @@ class OpenAIHelper:
         
         try:
             response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=self.model,
                 messages=[
                     {"role": "system", "content": "법률 조문을 명확하고 간결하게 요약해주세요."},
                     {"role": "user", "content": f"다음 법률 조문을 {max_length}자 이내로 요약해주세요:\n\n{text}"}
@@ -368,6 +541,51 @@ class OpenAIHelper:
             logger.error(f"Summarization error: {e}")
             return text[:max_length] + "..." if len(text) > max_length else text
     
+    def generate_legal_document(self, template_type: str, context: Dict[str, Any]) -> Optional[str]:
+        """
+        법률 문서 생성 (계약서, 의견서 등)
+        
+        Args:
+            template_type: 문서 유형 (contract, opinion, complaint 등)
+            context: 문서 생성에 필요한 정보
+            
+        Returns:
+            생성된 문서
+        """
+        if not self.enabled:
+            return "OpenAI API가 설정되지 않았습니다."
+        
+        templates = {
+            'contract': "표준 계약서를 작성해주세요.",
+            'opinion': "법률 의견서를 작성해주세요.",
+            'complaint': "민원 신청서를 작성해주세요.",
+            'petition': "청원서를 작성해주세요."
+        }
+        
+        try:
+            prompt = f"""{templates.get(template_type, '문서를 작성해주세요.')}
+            
+            관련 정보:
+            {json.dumps(context, ensure_ascii=False, indent=2)}
+            
+            전문적이고 법적 형식을 갖춘 문서를 작성해주세요."""
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "법률 문서 작성 전문가입니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.5,
+                max_tokens=2000
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            logger.error(f"Document generation error: {e}")
+            return f"문서 생성 중 오류가 발생했습니다: {str(e)}"
+    
     def _format_context(self, context: Dict[str, Any]) -> str:
         """
         컨텍스트 정보를 텍스트로 포맷팅
@@ -380,22 +598,50 @@ class OpenAIHelper:
         """
         formatted = []
         
+        # 법령
         if 'laws' in context:
             formatted.append("관련 법령:")
             for law in context['laws'][:3]:  # 최대 3개만
                 formatted.append(f"- {law.get('법령명', '')} : {law.get('조문내용', '')[:200]}...")
         
+        # 판례
         if 'cases' in context:
             formatted.append("\n관련 판례:")
             for case in context['cases'][:3]:
                 formatted.append(f"- {case.get('사건명', '')} ({case.get('선고일자', '')})")
                 formatted.append(f"  {case.get('판시사항', '')[:200]}...")
         
+        # 해석례
         if 'interpretations' in context:
             formatted.append("\n관련 해석:")
             for interp in context['interpretations'][:3]:
                 formatted.append(f"- {interp.get('안건명', '')}")
                 formatted.append(f"  {interp.get('회답', '')[:200]}...")
+        
+        # 위원회 결정
+        if 'committees' in context:
+            formatted.append("\n관련 위원회 결정:")
+            for decision in context['committees'][:3]:
+                formatted.append(f"- {decision.get('committee_name', '')} : {decision.get('title', '')}")
+                formatted.append(f"  주문: {decision.get('order', '')[:200]}...")
+        
+        # 조약
+        if 'treaties' in context:
+            formatted.append("\n관련 조약:")
+            for treaty in context['treaties'][:3]:
+                formatted.append(f"- {treaty.get('조약명', '')} ({treaty.get('발효일자', '')})")
+        
+        # 행정규칙
+        if 'admin_rules' in context:
+            formatted.append("\n관련 행정규칙:")
+            for rule in context['admin_rules'][:3]:
+                formatted.append(f"- {rule.get('행정규칙명', '')} ({rule.get('발령일자', '')})")
+        
+        # 자치법규
+        if 'local_laws' in context:
+            formatted.append("\n관련 자치법규:")
+            for law in context['local_laws'][:3]:
+                formatted.append(f"- {law.get('자치법규명', '')} ({law.get('지자체명', '')})")
         
         return "\n".join(formatted)
 
@@ -452,37 +698,88 @@ def parse_date(date_str: str) -> Optional[datetime]:
     return None
 
 
+def format_date_range(start_date: str, end_date: str) -> str:
+    """
+    날짜 범위 포맷팅
+    
+    Args:
+        start_date: 시작일 (YYYYMMDD)
+        end_date: 종료일 (YYYYMMDD)
+        
+    Returns:
+        포맷팅된 날짜 범위 문자열
+    """
+    return f"{start_date}~{end_date}"
+
+
+def extract_case_number(text: str) -> Optional[str]:
+    """
+    텍스트에서 사건번호 추출
+    
+    Args:
+        text: 텍스트
+        
+    Returns:
+        사건번호 또는 None
+    """
+    import re
+    
+    # 대법원 사건번호 패턴
+    pattern = r'\d{4}[다도허누]\d{4,6}'
+    match = re.search(pattern, text)
+    if match:
+        return match.group()
+    
+    # 헌재 사건번호 패턴
+    pattern = r'\d{4}헌[가나다라마바사]\d+'
+    match = re.search(pattern, text)
+    if match:
+        return match.group()
+    
+    return None
+
+
 # 테스트 코드
 if __name__ == "__main__":
     # API 클라이언트 테스트
-    print("=== 법제처 API 클라이언트 테스트 ===")
+    print("=== 법제처 API 클라이언트 테스트 (확장 버전) ===")
     
     # 법제처 API 테스트
     law_client = LawAPIClient()
     
+    # 지원 타겟 확인
+    print("\n1. 지원하는 타겟 타입")
+    targets = law_client.get_supported_targets()
+    print(f"총 {len(targets)}개 타겟 지원")
+    print("일부 예시:")
+    for key, value in list(targets.items())[:10]:
+        print(f"  - {key}: {value}")
+    
     # 법령 검색 테스트
-    print("\n1. 법령 검색 테스트")
-    results = law_client.search('law', '도로교통법', display=5)
-    if 'law' in results:
-        laws = results['law'] if isinstance(results['law'], list) else [results['law']]
-        for law in laws[:3]:
-            print(f"- {law.get('법령명한글', 'N/A')} ({law.get('공포일자', 'N/A')})")
+    print("\n2. 법령 검색 테스트")
+    params = {
+        'target': 'law',
+        'query': '도로교통법',
+        'display': 5,
+        'type': 'JSON'
+    }
+    results = law_client.search('lawSearch.do', params)
+    parsed = law_client.parse_response(results, 'law_search')
+    print(f"검색 결과: {parsed.get('totalCnt', 0)}건")
     
-    # 캐시 테스트
-    print("\n2. 캐시 테스트")
-    start_time = time.time()
-    results1 = law_client.search('law', '민법', display=5)
-    time1 = time.time() - start_time
-    
-    start_time = time.time()
-    results2 = law_client.search('law', '민법', display=5)  # 캐시에서 가져옴
-    time2 = time.time() - start_time
-    
-    print(f"첫 번째 요청: {time1:.2f}초")
-    print(f"두 번째 요청 (캐시): {time2:.2f}초")
+    # 위원회 결정문 검색 테스트
+    print("\n3. 위원회 결정문 검색 테스트")
+    params = {
+        'target': 'ftc',  # 공정거래위원회
+        'query': '불공정',
+        'display': 5,
+        'type': 'JSON'
+    }
+    results = law_client.search('lawSearch.do', params)
+    print(f"공정거래위원회 결정문 검색 완료")
     
     # OpenAI 테스트 (API 키가 있는 경우만)
-    print("\n3. OpenAI Helper 테스트")
+    print("\n4. OpenAI Helper 테스트")
     ai_helper = OpenAIHelper()
     if ai_helper.enabled:
         summary = ai_helper.summarize_law("이 법은 도로에서 일어나는 교통상의 모든 위험과 장해를 방지하고 제거하여 안전하고 원활한 교통을 확보함을 목적으로 한다.", 50)
