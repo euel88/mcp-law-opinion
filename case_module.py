@@ -1,5 +1,5 @@
 """
-case_module.py - 판례/심판례 검색 모듈 (완전판)
+case_module.py - 판례/심판례 검색 모듈 (Python 3.13 호환 수정판)
 
 이 모듈은 법제처 API를 사용하여 다양한 유형의 판례와 심판례를 검색하고 조회합니다.
 지원하는 판례 유형: 판례(대법원/하급심), 헌재결정례, 법령해석례, 행정심판례
@@ -18,29 +18,22 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class CourtType(Enum):
-    """법원 종류 열거형"""
-    SUPREME = ('400201', '대법원')
-    LOWER = ('400202', '하위법원')
-    
-    def __init__(self, code: str, name: str):
-        self.code = code
-        self.label = name  # ✅ 수정됨: label -> name
+# Enum 클래스를 단순한 딕셔너리로 대체 (Python 3.13 호환성)
+class CourtType:
+    """법원 종류"""
+    SUPREME = {'code': '400201', 'label': '대법원'}
+    LOWER = {'code': '400202', 'label': '하위법원'}
 
 
-class DecisionType(Enum):
-    """재결 구분 열거형 (행정심판)"""
-    DISMISSAL = ('440201', '기각')
-    REJECTION = ('440202', '각하')
-    ACCEPTANCE = ('440203', '인용')
-    PARTIAL_ACCEPTANCE = ('440204', '일부인용')
-    WITHDRAWAL = ('440205', '취하')
-    MEDIATION = ('440206', '조정')
-    OTHER = ('440207', '기타')
-    
-    def __init__(self, code: str, name: str):
-        self.code = code
-        self.label = name  # ✅ 수정됨: label -> name
+class DecisionType:
+    """재결 구분 (행정심판)"""
+    DISMISSAL = {'code': '440201', 'label': '기각'}
+    REJECTION = {'code': '440202', 'label': '각하'}
+    ACCEPTANCE = {'code': '440203', 'label': '인용'}
+    PARTIAL_ACCEPTANCE = {'code': '440204', 'label': '일부인용'}
+    WITHDRAWAL = {'code': '440205', 'label': '취하'}
+    MEDIATION = {'code': '440206', 'label': '조정'}
+    OTHER = {'code': '440207', 'label': '기타'}
 
 
 class CaseSearcher:
@@ -531,7 +524,7 @@ class CaseSearcher:
             
             result = self.api_client.get_detail('expc', **params)
             
-            if result.get('status') == 'success'):
+            if result.get('status') == 'success':
                 return {
                     'status': 'success',
                     'interpretation': self._normalize_legal_interpretation_detail(result.get('data', {}))
@@ -674,7 +667,7 @@ class CaseSearcher:
             
             result = self.api_client.get_detail('decc', **params)
             
-            if result.get('status') == 'success'):
+            if result.get('status') == 'success':
                 return {
                     'status': 'success',
                     'tribunal': self._normalize_admin_tribunal_detail(result.get('data', {}))
