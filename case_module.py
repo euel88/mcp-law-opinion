@@ -137,75 +137,109 @@ class CaseSearcher:
             검색 결과 딕셔너리
         """
         try:
-            params = {
-                'search': search_type,
-                'display': min(display, 100),
-                'page': page,
-                'sort': self.SORT_OPTIONS.get(sort, 'ddes')
-            }
+            # API 호출 (수정된 방식)
+            result = self.api_client.search(
+                target='prec',  # target을 첫 번째 인자로
+                query=query if query else '*',  # query가 없으면 '*'
+                search=search_type,
+                display=min(display, 100),
+                page=page,
+                sort=self.SORT_OPTIONS.get(sort, 'ddes'),
+                type='json',  # JSON 타입 명시
+                org=self.COURT_CODES.get(court) if court and court in self.COURT_CODES else None,
+                curt=court_name if court_name else None,
+                date=self._format_date_for_api(date) if date else None,
+                prncYd=f"{self._format_date_for_api(date_range[0])}~{self._format_date_for_api(date_range[1])}" if date_range and len(date_range) == 2 else None,
+                nb=case_number if case_number else None,
+                JO=reference_law if reference_law else None,
+                datSrcNm=self.DATA_SOURCES.get(data_source) if data_source and data_source in self.DATA_SOURCES else None,
+                gana=gana if gana else None,
+                popYn='Y' if popup else None
+            )
             
-            # 검색어 처리
-            if query:
-                params['query'] = query
+            # None 값 제거 (API에 불필요한 파라미터 전송 방지)
+            result = self.api_client.search(
+                target='prec',
+                query=query if query else '*',
+                search=search_type,
+                display=min(display, 100),
+                page=page,
+                sort=self.SORT_OPTIONS.get(sort, 'ddes'),
+                type='json'
+            )
             
-            # 법원 종류 처리
+            # 추가 파라미터 처리
+            params = {}
             if court and court in self.COURT_CODES:
                 params['org'] = self.COURT_CODES[court]
-            
-            # 법원명 처리
             if court_name:
                 params['curt'] = court_name
-            
-            # 특정 날짜 검색
             if date:
                 params['date'] = self._format_date_for_api(date)
-            
-            # 날짜 범위 검색
             if date_range and len(date_range) == 2:
-                start_date = self._format_date_for_api(date_range[0])
-                end_date = self._format_date_for_api(date_range[1])
-                params['prncYd'] = f"{start_date}~{end_date}"
-            
-            # 사건번호 검색
+                params['prncYd'] = f"{self._format_date_for_api(date_range[0])}~{self._format_date_for_api(date_range[1])}"
             if case_number:
                 params['nb'] = case_number
-            
-            # 참조법령 검색
             if reference_law:
                 params['JO'] = reference_law
-            
-            # 데이터 출처명
             if data_source and data_source in self.DATA_SOURCES:
                 params['datSrcNm'] = self.DATA_SOURCES[data_source]
-            
-            # 사전식 검색
             if gana:
                 params['gana'] = gana
-            
-            # 팝업 여부
             if popup:
                 params['popYn'] = 'Y'
             
-            # API 호출
-            result = self.api_client.search('prec', **params)
+            # API 재호출 with 추가 파라미터
+            if params:
+                result = self.api_client.search(
+                    target='prec',
+                    query=query if query else '*',
+                    search=search_type,
+                    display=min(display, 100),
+                    page=page,
+                    sort=self.SORT_OPTIONS.get(sort, 'ddes'),
+                    type='json',
+                    **params
+                )
             
-            # 결과 정규화
-            if result.get('status') == 'success':
-                cases = self._normalize_court_cases(result.get('data', []))
+            # 에러 체크
+            if isinstance(result, dict) and 'error' in result:
+                logger.error(f"판례 검색 API 오류: {result['error']}")
+                return {
+                    'status': 'error',
+                    'message': result['error'],
+                    'total_count': 0,
+                    'cases': []
+                }
+            
+            # 정상 결과 처리
+            if isinstance(result, dict):
+                cases = result.get('prec', [])  # 'prec' 키에서 판례 추출
+                
                 return {
                     'status': 'success',
                     'total_count': result.get('totalCnt', 0),
                     'page': page,
-                    'cases': cases,
+                    'cases': self._normalize_court_cases(cases),
                     'query': query,
                     'search_params': params
                 }
             
-            return result
+            return {
+                'status': 'error',
+                'message': 'Invalid response format',
+                'total_count': 0,
+                'cases': []
+            }
             
         except Exception as e:
             logger.error(f"법원 판례 검색 중 오류: {str(e)}")
-            return {'status': 'error', 'message': str(e)}
+            return {
+                'status': 'error',
+                'message': str(e),
+                'total_count': 0,
+                'cases': []
+            }
     
     def get_court_case_detail(
         self, 
@@ -237,15 +271,22 @@ class CaseSearcher:
                     'message': '판례 일련번호(ID) 또는 판례명(LM)이 필요합니다.'
                 }
             
-            result = self.api_client.get_detail('prec', **params)
+            result = self.api_client.get_detail(
+                target='prec',
+                type='json',
+                **params
+            )
             
-            if result.get('status') == 'success':
+            if isinstance(result, dict) and 'error' not in result:
                 return {
                     'status': 'success',
-                    'case': self._normalize_court_case_detail(result.get('data', {}))
+                    'case': self._normalize_court_case_detail(result)
                 }
             
-            return result
+            return {
+                'status': 'error',
+                'message': result.get('error', 'Unknown error')
+            }
             
         except Exception as e:
             logger.error(f"판례 상세 조회 중 오류: {str(e)}")
@@ -289,59 +330,66 @@ class CaseSearcher:
             검색 결과 딕셔너리
         """
         try:
-            params = {
-                'search': search_type,
-                'display': min(display, 100),
-                'page': page,
-                'sort': self.SORT_OPTIONS.get(sort, 'lasc')
-            }
+            # 기본 파라미터
+            params = {}
             
-            # 검색어 처리
-            if query:
-                params['query'] = query
-            
-            # 특정 날짜 검색
+            # 선택적 파라미터 추가
             if date:
                 params['date'] = self._format_date_for_api(date)
-            
-            # 날짜 범위 검색
             if date_range and len(date_range) == 2:
-                start_date = self._format_date_for_api(date_range[0])
-                end_date = self._format_date_for_api(date_range[1])
-                params['edYd'] = f"{start_date}~{end_date}"
-            
-            # 사건번호 검색
+                params['edYd'] = f"{self._format_date_for_api(date_range[0])}~{self._format_date_for_api(date_range[1])}"
             if case_number:
                 params['nb'] = case_number
-            
-            # 사전식 검색
             if gana:
                 params['gana'] = gana
-            
-            # 팝업 여부
             if popup:
                 params['popYn'] = 'Y'
             
             # API 호출
-            result = self.api_client.search('detc', **params)
+            result = self.api_client.search(
+                target='detc',
+                query=query if query else '*',
+                search=search_type,
+                display=min(display, 100),
+                page=page,
+                sort=self.SORT_OPTIONS.get(sort, 'lasc'),
+                type='json',
+                **params
+            )
             
-            # 결과 정규화
-            if result.get('status') == 'success':
-                decisions = self._normalize_constitutional_decisions(result.get('data', []))
+            # 에러 체크
+            if isinstance(result, dict) and 'error' in result:
+                logger.error(f"헌재결정례 검색 API 오류: {result['error']}")
+                return {
+                    'status': 'error',
+                    'message': result['error'],
+                    'total_count': 0,
+                    'decisions': []
+                }
+            
+            # 정상 결과 처리
+            if isinstance(result, dict):
+                decisions = result.get('detc', [])  # 'detc' 키에서 결정례 추출
+                
                 return {
                     'status': 'success',
                     'total_count': result.get('totalCnt', 0),
                     'page': page,
-                    'decisions': decisions,
+                    'decisions': self._normalize_constitutional_decisions(decisions),
                     'query': query,
                     'search_params': params
                 }
             
-            return result
+            return {
+                'status': 'error',
+                'message': 'Invalid response format',
+                'total_count': 0,
+                'decisions': []
+            }
             
         except Exception as e:
             logger.error(f"헌재결정례 검색 중 오류: {str(e)}")
-            return {'status': 'error', 'message': str(e)}
+            return {'status': 'error', 'message': str(e), 'total_count': 0, 'decisions': []}
     
     def get_constitutional_decision_detail(
         self,
@@ -373,15 +421,22 @@ class CaseSearcher:
                     'message': '헌재결정례 일련번호(ID) 또는 헌재결정례명(LM)이 필요합니다.'
                 }
             
-            result = self.api_client.get_detail('detc', **params)
+            result = self.api_client.get_detail(
+                target='detc',
+                type='json',
+                **params
+            )
             
-            if result.get('status') == 'success':
+            if isinstance(result, dict) and 'error' not in result:
                 return {
                     'status': 'success',
-                    'decision': self._normalize_constitutional_decision_detail(result.get('data', {}))
+                    'decision': self._normalize_constitutional_decision_detail(result)
                 }
             
-            return result
+            return {
+                'status': 'error',
+                'message': result.get('error', 'Unknown error')
+            }
             
         except Exception as e:
             logger.error(f"헌재결정례 상세 조회 중 오류: {str(e)}")
@@ -428,69 +483,69 @@ class CaseSearcher:
             검색 결과 딕셔너리
         """
         try:
-            params = {
-                'search': search_type,
-                'display': min(display, 100),
-                'page': page,
-                'sort': self.SORT_OPTIONS.get(sort, 'lasc')
-            }
+            # 선택적 파라미터
+            params = {}
             
-            # 검색어 처리
-            if query:
-                params['query'] = query
-            
-            # 질의기관
             if requesting_agency:
                 params['inq'] = requesting_agency
-            
-            # 회신기관
             if responding_agency:
                 params['rpl'] = responding_agency
-            
-            # 안건번호 (하이픈 제거)
             if case_number:
-                params['itmno'] = case_number.replace('-', '')
-            
-            # 등록일자 범위
+                params['itmno'] = case_number.replace('-', '')  # 하이픈 제거
             if registration_date_range and len(registration_date_range) == 2:
-                start_date = self._format_date_for_api(registration_date_range[0])
-                end_date = self._format_date_for_api(registration_date_range[1])
-                params['regYd'] = f"{start_date}~{end_date}"
-            
-            # 해석일자 범위
+                params['regYd'] = f"{self._format_date_for_api(registration_date_range[0])}~{self._format_date_for_api(registration_date_range[1])}"
             if interpretation_date_range and len(interpretation_date_range) == 2:
-                start_date = self._format_date_for_api(interpretation_date_range[0])
-                end_date = self._format_date_for_api(interpretation_date_range[1])
-                params['explYd'] = f"{start_date}~{end_date}"
-            
-            # 사전식 검색
+                params['explYd'] = f"{self._format_date_for_api(interpretation_date_range[0])}~{self._format_date_for_api(interpretation_date_range[1])}"
             if gana:
                 params['gana'] = gana
-            
-            # 팝업 여부
             if popup:
                 params['popYn'] = 'Y'
             
             # API 호출
-            result = self.api_client.search('expc', **params)
+            result = self.api_client.search(
+                target='expc',
+                query=query if query else '*',
+                search=search_type,
+                display=min(display, 100),
+                page=page,
+                sort=self.SORT_OPTIONS.get(sort, 'lasc'),
+                type='json',
+                **params
+            )
             
-            # 결과 정규화
-            if result.get('status') == 'success':
-                interpretations = self._normalize_legal_interpretations(result.get('data', []))
+            # 에러 체크
+            if isinstance(result, dict) and 'error' in result:
+                logger.error(f"법령해석례 검색 API 오류: {result['error']}")
+                return {
+                    'status': 'error',
+                    'message': result['error'],
+                    'total_count': 0,
+                    'interpretations': []
+                }
+            
+            # 정상 결과 처리
+            if isinstance(result, dict):
+                interpretations = result.get('expc', [])  # 'expc' 키에서 해석례 추출
+                
                 return {
                     'status': 'success',
                     'total_count': result.get('totalCnt', 0),
                     'page': page,
-                    'interpretations': interpretations,
+                    'interpretations': self._normalize_legal_interpretations(interpretations),
                     'query': query,
                     'search_params': params
                 }
             
-            return result
+            return {
+                'status': 'error',
+                'message': 'Invalid response format',
+                'total_count': 0,
+                'interpretations': []
+            }
             
         except Exception as e:
             logger.error(f"법령해석례 검색 중 오류: {str(e)}")
-            return {'status': 'error', 'message': str(e)}
+            return {'status': 'error', 'message': str(e), 'total_count': 0, 'interpretations': []}
     
     def get_legal_interpretation_detail(
         self,
@@ -522,15 +577,22 @@ class CaseSearcher:
                     'message': '법령해석례 일련번호(ID) 또는 법령해석례명(LM)이 필요합니다.'
                 }
             
-            result = self.api_client.get_detail('expc', **params)
+            result = self.api_client.get_detail(
+                target='expc',
+                type='json',
+                **params
+            )
             
-            if result.get('status') == 'success':
+            if isinstance(result, dict) and 'error' not in result:
                 return {
                     'status': 'success',
-                    'interpretation': self._normalize_legal_interpretation_detail(result.get('data', {}))
+                    'interpretation': self._normalize_legal_interpretation_detail(result)
                 }
             
-            return result
+            return {
+                'status': 'error',
+                'message': result.get('error', 'Unknown error')
+            }
             
         except Exception as e:
             logger.error(f"법령해석례 상세 조회 중 오류: {str(e)}")
@@ -575,65 +637,67 @@ class CaseSearcher:
             검색 결과 딕셔너리
         """
         try:
-            params = {
-                'search': search_type,
-                'display': min(display, 100),
-                'page': page,
-                'sort': self.SORT_OPTIONS.get(sort, 'lasc')
-            }
+            # 선택적 파라미터
+            params = {}
             
-            # 검색어 처리
-            if query:
-                params['query'] = query
-            
-            # 재결례 유형
             if decision_type and decision_type in self.DECISION_CODES:
                 params['cls'] = self.DECISION_CODES[decision_type]
-            
-            # 특정 의결일자
             if decision_date:
                 params['date'] = self._format_date_for_api(decision_date)
-            
-            # 의결일자 범위
             if decision_date_range and len(decision_date_range) == 2:
-                start_date = self._format_date_for_api(decision_date_range[0])
-                end_date = self._format_date_for_api(decision_date_range[1])
-                params['rslYd'] = f"{start_date}~{end_date}"
-            
-            # 처분일자 범위
+                params['rslYd'] = f"{self._format_date_for_api(decision_date_range[0])}~{self._format_date_for_api(decision_date_range[1])}"
             if disposition_date_range and len(disposition_date_range) == 2:
-                start_date = self._format_date_for_api(disposition_date_range[0])
-                end_date = self._format_date_for_api(disposition_date_range[1])
-                params['dpaYd'] = f"{start_date}~{end_date}"
-            
-            # 사전식 검색
+                params['dpaYd'] = f"{self._format_date_for_api(disposition_date_range[0])}~{self._format_date_for_api(disposition_date_range[1])}"
             if gana:
                 params['gana'] = gana
-            
-            # 팝업 여부
             if popup:
                 params['popYn'] = 'Y'
             
             # API 호출
-            result = self.api_client.search('decc', **params)
+            result = self.api_client.search(
+                target='decc',
+                query=query if query else '*',
+                search=search_type,
+                display=min(display, 100),
+                page=page,
+                sort=self.SORT_OPTIONS.get(sort, 'lasc'),
+                type='json',
+                **params
+            )
             
-            # 결과 정규화
-            if result.get('status') == 'success':
-                tribunals = self._normalize_admin_tribunals(result.get('data', []))
+            # 에러 체크
+            if isinstance(result, dict) and 'error' in result:
+                logger.error(f"행정심판례 검색 API 오류: {result['error']}")
+                return {
+                    'status': 'error',
+                    'message': result['error'],
+                    'total_count': 0,
+                    'tribunals': []
+                }
+            
+            # 정상 결과 처리
+            if isinstance(result, dict):
+                tribunals = result.get('decc', [])  # 'decc' 키에서 심판례 추출
+                
                 return {
                     'status': 'success',
                     'total_count': result.get('totalCnt', 0),
                     'page': page,
-                    'tribunals': tribunals,
+                    'tribunals': self._normalize_admin_tribunals(tribunals),
                     'query': query,
                     'search_params': params
                 }
             
-            return result
+            return {
+                'status': 'error',
+                'message': 'Invalid response format',
+                'total_count': 0,
+                'tribunals': []
+            }
             
         except Exception as e:
             logger.error(f"행정심판례 검색 중 오류: {str(e)}")
-            return {'status': 'error', 'message': str(e)}
+            return {'status': 'error', 'message': str(e), 'total_count': 0, 'tribunals': []}
     
     def get_admin_tribunal_detail(
         self,
@@ -665,15 +729,22 @@ class CaseSearcher:
                     'message': '행정심판례 일련번호(ID) 또는 행정심판례명(LM)이 필요합니다.'
                 }
             
-            result = self.api_client.get_detail('decc', **params)
+            result = self.api_client.get_detail(
+                target='decc',
+                type='json',
+                **params
+            )
             
-            if result.get('status') == 'success':
+            if isinstance(result, dict) and 'error' not in result:
                 return {
                     'status': 'success',
-                    'tribunal': self._normalize_admin_tribunal_detail(result.get('data', {}))
+                    'tribunal': self._normalize_admin_tribunal_detail(result)
                 }
             
-            return result
+            return {
+                'status': 'error',
+                'message': result.get('error', 'Unknown error')
+            }
             
         except Exception as e:
             logger.error(f"행정심판례 상세 조회 중 오류: {str(e)}")
