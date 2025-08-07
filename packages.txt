@@ -1,16 +1,6 @@
-# System packages for Streamlit Cloud
-# These packages are installed via apt-get
-
-# Build tools
 build-essential
-
-# XML/XSLT processing libraries
 libxml2-dev
 libxslt1-dev
-
-# Image processing (for matplotlib backend)
 libpng-dev
 libfreetype6-dev
-
-# Python development headers
 python3-dev
