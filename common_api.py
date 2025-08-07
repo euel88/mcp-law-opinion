@@ -4,6 +4,7 @@ common_api.py - 공통 API 클라이언트 모듈 (확장 버전)
 모든 모듈의 API 호출을 지원하는 완전한 구현
 """
 
+import re
 import os
 import time
 import json
