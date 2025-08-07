@@ -25,7 +25,7 @@ class CourtType(Enum):
     
     def __init__(self, code: str, name: str):
         self.code = code
-        self.name = name
+        self.label = label
 
 
 class DecisionType(Enum):
@@ -40,7 +40,7 @@ class DecisionType(Enum):
     
     def __init__(self, code: str, name: str):
         self.code = code
-        self.name = name
+        self.label = label
 
 
 class CaseSearcher:
