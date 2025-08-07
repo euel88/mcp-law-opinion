@@ -155,16 +155,25 @@ class LawAPIClient:
     
     def __init__(self, oc_key: Optional[str] = None, cache_ttl: int = 3600):
         """
-        초기화
+        초기화 (개선된 버전)
         
         Args:
             oc_key: 법제처 API 키 (없으면 환경변수에서 읽음)
             cache_ttl: 캐시 유효시간 (초)
         """
         self.oc_key = oc_key or os.getenv('LAW_API_KEY', '')
+        
+        # API 키 검증 및 로깅
         if not self.oc_key:
             logger.warning("OC 키가 설정되지 않았습니다. 일부 API 호출이 실패할 수 있습니다.")
             self.oc_key = 'test'  # 테스트용 기본값
+        else:
+            # API 키 형식 확인
+            if len(self.oc_key) < 10:
+                logger.warning(f"OC 키가 너무 짧습니다: {len(self.oc_key)}자")
+            else:
+                logger.info(f"OC 키 설정 완료: {self.oc_key[:4]}****{self.oc_key[-4:]}")
+        
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -173,7 +182,7 @@ class LawAPIClient:
         self.retry_count = 3
         self.retry_delay = 1
         
-        logger.info(f"LawAPIClient 초기화 완료 - API Key: {self.oc_key[:4]}..." if self.oc_key and len(self.oc_key) > 4 else "LawAPIClient 초기화 완료")
+        logger.info(f"LawAPIClient 초기화 완료 - 캐시 TTL: {cache_ttl}초, 재시도: {self.retry_count}회")
     
     def search(self, target: str = None, **params) -> Dict[str, Any]:
         """
