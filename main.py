@@ -77,7 +77,14 @@ def get_api_clients():
     try:
         law_api_key = st.session_state.api_keys.get('law_api_key', '')
         openai_api_key = st.session_state.api_keys.get('openai_api_key', '')
-        
+
+        # API 키 검증 로깅 추가
+        logger.info(f"Initializing API clients...")
+        logger.info(f"Law API key exists: {bool(law_api_key)}")
+        if law_api_key:
+            logger.info(f"Law API key length: {len(law_api_key)}")
+            logger.info(f"Law API key preview: {law_api_key[:4]}...{law_api_key[-4:]}")
+            
         if not law_api_key:
             st.warning("⚠️ 법제처 API 키가 설정되지 않았습니다.")
             logger.warning("Law API key not found")
