@@ -17,7 +17,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       
       # Application settings
-      - DEFAULT_GPT_MODEL=${DEFAULT_GPT_MODEL:-gpt-4o-mini}
+      - DEFAULT_GPT_MODEL=${DEFAULT_GPT_MODEL:-o3}
       - CACHE_TTL=${CACHE_TTL:-3600}
       - DEBUG=${DEBUG:-False}
       
