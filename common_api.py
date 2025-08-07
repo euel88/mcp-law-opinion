@@ -567,11 +567,11 @@ class OpenAIHelper:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "system", "content": "행정법 전문가입니다."},
+                    {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_completion_tokens=2000
+                max_completion_tokens=1500
             )
             
             return response.choices[0].message.content
