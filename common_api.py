@@ -185,7 +185,7 @@ class LawAPIClient:
         
         logger.info(f"LawAPIClient 초기화 완료 - 캐시 TTL: {cache_ttl}초, 재시도: {self.retry_count}회")
     
-   def search(self, target: str = None, **params) -> Dict[str, Any]:
+    def search(self, target: str = None, **params) -> Dict[str, Any]:
         """
         검색 API 호출 (개선된 버전)
         
