@@ -62,7 +62,7 @@ def init_session_state():
             'law_api_key': os.getenv('LAW_API_KEY', ''),
             'openai_api_key': os.getenv('OPENAI_API_KEY', '')
         }
-        st.session_state.selected_model = 'gpt-4o-mini'
+        st.session_state.selected_model = 'o3'
         st.session_state.cache = {}
         st.session_state.api_clients = None
         st.session_state.selected_committees = []
@@ -164,10 +164,10 @@ def render_sidebar():
         # GPT 모델 선택
         st.markdown("### 🤖 AI 모델")
         models = {
-            'gpt-4o': 'GPT-4o (최신)',
-            'gpt-4o-mini': 'GPT-4o Mini',
-            'gpt-4-turbo': 'GPT-4 Turbo',
-            'gpt-3.5-turbo': 'GPT-3.5 Turbo'
+            'o3': 'o3 (최신)',
+            'o3-mini': 'o3-mini',
+            'o4-mini': 'o4-mini',
+            'o3-pro': 'o3-pro'
         }
         
         st.session_state.selected_model = st.selectbox(
@@ -1357,7 +1357,7 @@ def main():
         
         st.info("""
         💡 **Tip**: 
-        - 복잡한 법률 문제는 GPT-4o 모델을 사용하세요
+        - 복잡한 법률 문제는 o3-pro 모델을 사용하세요
         - 검색 결과는 자동으로 캐시되어 빠른 재검색이 가능합니다
         - AI 분석 시 관련 법령/판례를 자동으로 검색하여 정확도를 높입니다
         """)
