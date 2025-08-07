@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  k-law-assistant:
+    build: .
+    container_name: k-law-assistant
+    ports:
+      - "8501:8501"
+    environment:
+      - LAW_API_KEY=${LAW_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEFAULT_GPT_MODEL=${DEFAULT_GPT_MODEL:-gpt-4o-mini}
+      - CACHE_TTL=${CACHE_TTL:-3600}
+      - DEBUG=${DEBUG:-False}
+    volumes:
+      # 개발 중 코드 변경사항 실시간 반영
+      - ./:/app
+      # 검색 이력 등 데이터 영속성
+      - k-law-data:/app/data
+    restart: unless-stopped
+    networks:
+      - k-law-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  k-law-data:
+    driver: local
+
+networks:
+  k-law-network:
+    driver: bridge
