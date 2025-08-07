@@ -1,7 +1,7 @@
 """
-K-Law Assistant - 통합 법률 검토 지원 시스템 (간소화 버전)
-Enhanced Main Application with Simplified UI and Law Download Feature
-Version 7.0 - Streamlined Interface
+K-Law Assistant - 통합 법률 검토 지원 시스템 (체계도 완전 다운로드 버전)
+Enhanced Main Application with Complete Law Hierarchy Download
+Version 8.0 - Full Hierarchy Download including Administrative Rules
 """
 
 import os
@@ -65,7 +65,7 @@ st.set_page_config(
     menu_items={
         'Get Help': 'https://github.com/your-repo',
         'Report a bug': 'https://github.com/your-repo/issues',
-        'About': 'K-Law Assistant Pro v7.0 - AI 기반 통합 법률 검색 시스템'
+        'About': 'K-Law Assistant Pro v8.0 - AI 기반 통합 법률 검색 시스템'
     }
 )
 
@@ -109,6 +109,7 @@ def init_session_state():
         st.session_state.nlp_enabled = NLP_MODULE_LOADED
         st.session_state.smart_search_history = []
         st.session_state.downloaded_laws = []
+        st.session_state.hierarchy_cache = {}  # 법령 체계도 캐시 추가
         logger.info("Session state initialized successfully")
 
 # ========================= API Clients Initialization =========================
@@ -167,7 +168,744 @@ def get_api_clients():
         st.error(f"API 클라이언트 초기화 실패: {str(e)}")
         return {}
 
-# ========================= Enhanced Smart Search Tab =========================
+# ========================= Enhanced Law Download Tab with Full Hierarchy =========================
+
+def render_law_download_tab():
+    """법령 체계도 기반 완전 일괄 다운로드 탭 (행정규칙 포함)"""
+    st.header("📥 법령 일괄 다운로드 (체계도 기반)")
+    
+    clients = get_api_clients()
+    
+    if not clients.get('law_searcher'):
+        st.error("법령 검색 모듈을 초기화할 수 없습니다.")
+        return
+    
+    st.markdown("""
+    ### 📋 법령 체계도 기반 완전 다운로드
+    
+    법령과 관련된 모든 하위 법령을 한 번에 다운로드할 수 있습니다:
+    - **법률** → **시행령** → **시행규칙**
+    - **행정규칙** (훈령, 예규, 고시, 지침)
+    - **관련 자치법규** (조례, 규칙)
+    - **위임 법령** 및 **별표서식**
+    """)
+    
+    # 법령 검색
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        law_name = st.text_input(
+            "법령명 입력",
+            placeholder="예: 상호저축은행법, 도로교통법, 개인정보보호법",
+            key="download_law_name"
+        )
+    
+    with col2:
+        st.write("")
+        search_btn = st.button("🔍 체계도 조회", type="primary", use_container_width=True, key="search_structure_btn")
+    
+    # 다운로드 옵션
+    with st.expander("⚙️ 다운로드 옵션", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown("**기본 법령**")
+            include_law = st.checkbox("법률", value=True, key="include_law")
+            include_decree = st.checkbox("시행령", value=True, key="include_decree")
+            include_rule = st.checkbox("시행규칙", value=True, key="include_rule")
+        
+        with col2:
+            st.markdown("**행정규칙**")
+            include_directive = st.checkbox("훈령", value=True, key="include_directive")
+            include_regulation = st.checkbox("예규", value=True, key="include_regulation")
+            include_notice = st.checkbox("고시", value=True, key="include_notice")
+            include_guideline = st.checkbox("지침", value=False, key="include_guideline")
+        
+        with col3:
+            st.markdown("**기타**")
+            include_local = st.checkbox("자치법규", value=False, key="include_local")
+            include_attachments = st.checkbox("별표서식", value=False, key="include_attachments")
+            include_history = st.checkbox("법령 연혁", value=False, key="include_history")
+            include_delegated = st.checkbox("위임 법령", value=False, key="include_delegated")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        format_option = st.selectbox(
+            "다운로드 형식",
+            ["Markdown (.md)", "Text (.txt)", "JSON (.json)", "HTML (.html)"],
+            key="format_option"
+        )
+    
+    with col2:
+        search_depth = st.selectbox(
+            "검색 깊이",
+            ["1단계 (직접 관련)", "2단계 (확장)", "3단계 (전체)"],
+            key="search_depth"
+        )
+    
+    # 체계도 조회 및 다운로드
+    if search_btn and law_name:
+        with st.spinner(f'"{law_name}" 법령 체계도 조회 중...'):
+            try:
+                law_searcher = clients['law_searcher']
+                treaty_admin_searcher = clients.get('treaty_admin_searcher')
+                
+                # 1. 주 법령 검색
+                main_law_result = law_searcher.search_laws(
+                    query=law_name,
+                    display=10
+                )
+                
+                if main_law_result.get('totalCnt', 0) == 0:
+                    st.warning(f"'{law_name}'에 대한 검색 결과가 없습니다.")
+                    return
+                
+                # 검색 결과 표시
+                st.markdown("### 🔍 검색된 법령")
+                
+                laws_to_download = []
+                
+                for idx, law in enumerate(main_law_result.get('results', [])[:5], 1):
+                    law_id = law.get('법령ID') or law.get('법령일련번호')
+                    law_title = law.get('법령명한글', 'N/A')
+                    
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    with col1:
+                        st.write(f"{idx}. {law_title}")
+                    with col2:
+                        st.write(f"공포: {law.get('공포일자', 'N/A')}")
+                    with col3:
+                        if st.checkbox("선택", key=f"select_law_{idx}", value=idx==1):
+                            laws_to_download.append({
+                                'id': law_id,
+                                'title': law_title,
+                                'law': law
+                            })
+                
+                if laws_to_download:
+                    st.markdown("---")
+                    
+                    # 2. 관련 법령 체계도 조회 (개선된 버전)
+                    if st.button("📊 전체 법령 체계도 조회", key="get_full_structure_btn"):
+                        with st.spinner("전체 법령 체계도 및 관련 법령 조회 중..."):
+                            all_related_laws = []
+                            hierarchy_info = {}
+                            
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            for selected_law in laws_to_download:
+                                st.markdown(f"#### 📋 {selected_law['title']} 관련 법령 체계")
+                                
+                                # 체계도 정보 초기화
+                                hierarchy_info[selected_law['title']] = {
+                                    'main': selected_law['law'],
+                                    'decree': [],
+                                    'rule': [],
+                                    'admin_rules': {
+                                        'directive': [],  # 훈령
+                                        'regulation': [],  # 예규
+                                        'notice': [],      # 고시
+                                        'guideline': []    # 지침
+                                    },
+                                    'local_laws': [],
+                                    'attachments': [],
+                                    'delegated': []
+                                }
+                                
+                                # 주 법령 포함
+                                related_laws = [selected_law['law']]
+                                base_name = selected_law['title'].replace('법', '').strip()
+                                
+                                # 진행상황 업데이트
+                                status_text.text("법령 체계도 조회 중...")
+                                progress_bar.progress(0.1)
+                                
+                                # 법령 체계도 및 위임 법령 조회
+                                try:
+                                    if include_delegated:
+                                        delegated = law_searcher.get_delegated_laws(law_id=selected_law['id'])
+                                        if delegated and 'error' not in delegated:
+                                            hierarchy_info[selected_law['title']]['delegated'].append(delegated)
+                                    
+                                    structure = law_searcher.get_law_structure_detail(law_id=selected_law['id'])
+                                    if structure and 'error' not in structure:
+                                        st.info("✅ 법령 체계도 조회 완료")
+                                except Exception as e:
+                                    logger.error(f"체계도 조회 실패: {e}")
+                                
+                                # 시행령 검색
+                                if include_decree:
+                                    status_text.text("시행령 검색 중...")
+                                    progress_bar.progress(0.2)
+                                    
+                                    for search_term in [f"{base_name} 시행령", f"{base_name}법 시행령", f"{selected_law['title']} 시행령"]:
+                                        decree_result = law_searcher.search_laws(
+                                            query=search_term,
+                                            display=10
+                                        )
+                                        if decree_result.get('results'):
+                                            for decree in decree_result['results']:
+                                                if '시행령' in decree.get('법령명한글', ''):
+                                                    hierarchy_info[selected_law['title']]['decree'].append(decree)
+                                                    related_laws.append(decree)
+                                
+                                # 시행규칙 검색
+                                if include_rule:
+                                    status_text.text("시행규칙 검색 중...")
+                                    progress_bar.progress(0.3)
+                                    
+                                    for search_term in [f"{base_name} 시행규칙", f"{base_name}법 시행규칙", f"{selected_law['title']} 시행규칙"]:
+                                        rule_result = law_searcher.search_laws(
+                                            query=search_term,
+                                            display=10
+                                        )
+                                        if rule_result.get('results'):
+                                            for rule in rule_result['results']:
+                                                if '시행규칙' in rule.get('법령명한글', ''):
+                                                    hierarchy_info[selected_law['title']]['rule'].append(rule)
+                                                    related_laws.append(rule)
+                                
+                                # 행정규칙 검색 (세분화)
+                                if treaty_admin_searcher:
+                                    # 훈령 검색
+                                    if include_directive:
+                                        status_text.text("훈령 검색 중...")
+                                        progress_bar.progress(0.4)
+                                        
+                                        directive_result = treaty_admin_searcher.search_admin_rules(
+                                            query=base_name,
+                                            kind=1,  # 훈령
+                                            display=20
+                                        )
+                                        if directive_result.get('totalCnt', 0) > 0:
+                                            directives = directive_result.get('rules', directive_result.get('results', []))
+                                            hierarchy_info[selected_law['title']]['admin_rules']['directive'].extend(directives)
+                                            related_laws.extend(directives)
+                                    
+                                    # 예규 검색
+                                    if include_regulation:
+                                        status_text.text("예규 검색 중...")
+                                        progress_bar.progress(0.5)
+                                        
+                                        regulation_result = treaty_admin_searcher.search_admin_rules(
+                                            query=base_name,
+                                            kind=2,  # 예규
+                                            display=20
+                                        )
+                                        if regulation_result.get('totalCnt', 0) > 0:
+                                            regulations = regulation_result.get('rules', regulation_result.get('results', []))
+                                            hierarchy_info[selected_law['title']]['admin_rules']['regulation'].extend(regulations)
+                                            related_laws.extend(regulations)
+                                    
+                                    # 고시 검색
+                                    if include_notice:
+                                        status_text.text("고시 검색 중...")
+                                        progress_bar.progress(0.6)
+                                        
+                                        notice_result = treaty_admin_searcher.search_admin_rules(
+                                            query=base_name,
+                                            kind=3,  # 고시
+                                            display=20
+                                        )
+                                        if notice_result.get('totalCnt', 0) > 0:
+                                            notices = notice_result.get('rules', notice_result.get('results', []))
+                                            hierarchy_info[selected_law['title']]['admin_rules']['notice'].extend(notices)
+                                            related_laws.extend(notices)
+                                    
+                                    # 지침 검색
+                                    if include_guideline:
+                                        status_text.text("지침 검색 중...")
+                                        progress_bar.progress(0.7)
+                                        
+                                        guideline_result = treaty_admin_searcher.search_admin_rules(
+                                            query=base_name,
+                                            kind=4,  # 지침
+                                            display=20
+                                        )
+                                        if guideline_result.get('totalCnt', 0) > 0:
+                                            guidelines = guideline_result.get('rules', guideline_result.get('results', []))
+                                            hierarchy_info[selected_law['title']]['admin_rules']['guideline'].extend(guidelines)
+                                            related_laws.extend(guidelines)
+                                    
+                                    # 자치법규 검색
+                                    if include_local:
+                                        status_text.text("자치법규 검색 중...")
+                                        progress_bar.progress(0.8)
+                                        
+                                        local_result = treaty_admin_searcher.search_local_laws(
+                                            query=base_name,
+                                            display=20
+                                        )
+                                        if local_result.get('totalCnt', 0) > 0:
+                                            local_laws = local_result.get('ordinances', local_result.get('results', []))
+                                            hierarchy_info[selected_law['title']]['local_laws'].extend(local_laws)
+                                            related_laws.extend(local_laws)
+                                    
+                                    # 별표서식 검색
+                                    if include_attachments:
+                                        status_text.text("별표서식 검색 중...")
+                                        progress_bar.progress(0.9)
+                                        
+                                        # 법령 별표서식
+                                        law_attach_result = treaty_admin_searcher.search_law_attachments(
+                                            query=base_name,
+                                            display=10
+                                        )
+                                        if law_attach_result.get('totalCnt', 0) > 0:
+                                            attachments = law_attach_result.get('attachments', law_attach_result.get('results', []))
+                                            hierarchy_info[selected_law['title']]['attachments'].extend(attachments)
+                                            related_laws.extend(attachments)
+                                        
+                                        # 행정규칙 별표서식
+                                        admin_attach_result = treaty_admin_searcher.search_admin_attachments(
+                                            query=base_name,
+                                            display=10
+                                        )
+                                        if admin_attach_result.get('totalCnt', 0) > 0:
+                                            admin_attachments = admin_attach_result.get('attachments', admin_attach_result.get('results', []))
+                                            hierarchy_info[selected_law['title']]['attachments'].extend(admin_attachments)
+                                            related_laws.extend(admin_attachments)
+                                
+                                # 중복 제거
+                                unique_laws = []
+                                seen_ids = set()
+                                for law in related_laws:
+                                    law_id = (law.get('법령ID') or law.get('법령일련번호') or 
+                                             law.get('행정규칙ID') or law.get('자치법규ID') or
+                                             law.get('별표서식ID') or str(law.get('법령명한글', '')) + str(law.get('행정규칙명', '')))
+                                    if law_id and law_id not in seen_ids:
+                                        seen_ids.add(law_id)
+                                        unique_laws.append(law)
+                                
+                                all_related_laws.extend(unique_laws)
+                                
+                                # 진행 완료
+                                progress_bar.progress(1.0)
+                                status_text.text("검색 완료!")
+                                
+                                # 체계도 표시
+                                display_hierarchy_tree(hierarchy_info[selected_law['title']], selected_law['title'])
+                            
+                            # 3. 통계 및 다운로드 준비
+                            if all_related_laws:
+                                st.markdown("---")
+                                st.markdown(f"### 💾 다운로드 준비 완료")
+                                
+                                # 통계 표시
+                                col1, col2, col3, col4 = st.columns(4)
+                                with col1:
+                                    st.metric("총 법령 수", f"{len(all_related_laws)}개")
+                                with col2:
+                                    law_count = sum(1 for l in all_related_laws if '법률' in str(l.get('법령구분명', '')))
+                                    st.metric("법률", f"{law_count}개")
+                                with col3:
+                                    decree_count = sum(1 for l in all_related_laws if '시행령' in str(l.get('법령명한글', '')))
+                                    st.metric("시행령", f"{decree_count}개")
+                                with col4:
+                                    admin_count = sum(1 for l in all_related_laws if l.get('행정규칙명'))
+                                    st.metric("행정규칙", f"{admin_count}개")
+                                
+                                # 다운로드 버튼
+                                st.markdown("### 📥 다운로드")
+                                col1, col2, col3 = st.columns(3)
+                                
+                                with col1:
+                                    # Markdown 형식 다운로드
+                                    if format_option == "Markdown (.md)":
+                                        md_content = generate_enhanced_laws_markdown(
+                                            all_related_laws, 
+                                            hierarchy_info,
+                                            law_searcher, 
+                                            include_history
+                                        )
+                                        st.download_button(
+                                            "📄 Markdown 다운로드",
+                                            data=md_content,
+                                            file_name=f"{law_name}_complete_hierarchy_{datetime.now().strftime('%Y%m%d')}.md",
+                                            mime="text/markdown",
+                                            key="download_md",
+                                            use_container_width=True
+                                        )
+                                
+                                with col2:
+                                    # ZIP 파일로 개별 다운로드
+                                    zip_buffer = create_enhanced_laws_zip(
+                                        all_related_laws,
+                                        hierarchy_info,
+                                        law_searcher,
+                                        format_option,
+                                        include_history
+                                    )
+                                    st.download_button(
+                                        "📦 ZIP 다운로드 (개별 파일)",
+                                        data=zip_buffer,
+                                        file_name=f"{law_name}_complete_hierarchy_{datetime.now().strftime('%Y%m%d')}.zip",
+                                        mime="application/zip",
+                                        key="download_zip",
+                                        use_container_width=True
+                                    )
+                                
+                                with col3:
+                                    # JSON 형식 다운로드
+                                    json_data = {
+                                        'metadata': {
+                                            'search_query': law_name,
+                                            'total_count': len(all_related_laws),
+                                            'download_date': datetime.now().isoformat(),
+                                            'hierarchy': hierarchy_info
+                                        },
+                                        'laws': all_related_laws
+                                    }
+                                    json_content = json.dumps(json_data, ensure_ascii=False, indent=2)
+                                    st.download_button(
+                                        "📊 JSON 다운로드",
+                                        data=json_content,
+                                        file_name=f"{law_name}_complete_hierarchy_{datetime.now().strftime('%Y%m%d')}.json",
+                                        mime="application/json",
+                                        key="download_json_file",
+                                        use_container_width=True
+                                    )
+                                
+                                # 다운로드 이력 저장
+                                st.session_state.downloaded_laws.append({
+                                    'law_name': law_name,
+                                    'count': len(all_related_laws),
+                                    'hierarchy': hierarchy_info,
+                                    'timestamp': datetime.now().isoformat()
+                                })
+                                
+                                # 체계도 캐시 저장
+                                st.session_state.hierarchy_cache[law_name] = hierarchy_info
+                
+            except Exception as e:
+                st.error(f"법령 체계도 조회 중 오류 발생: {str(e)}")
+                logger.exception(f"Law structure search error: {e}")
+
+def display_hierarchy_tree(hierarchy: Dict, law_name: str):
+    """법령 체계도를 트리 형태로 표시"""
+    with st.expander(f"📊 {law_name} 법령 체계도", expanded=True):
+        # 주 법령
+        st.markdown(f"**📚 주 법령**")
+        st.write(f"└─ {hierarchy['main'].get('법령명한글', 'N/A')}")
+        
+        # 시행령
+        if hierarchy['decree']:
+            st.markdown(f"**📘 시행령 ({len(hierarchy['decree'])}개)**")
+            for decree in hierarchy['decree']:
+                st.write(f"  └─ {decree.get('법령명한글', 'N/A')}")
+        
+        # 시행규칙
+        if hierarchy['rule']:
+            st.markdown(f"**📗 시행규칙 ({len(hierarchy['rule'])}개)**")
+            for rule in hierarchy['rule']:
+                st.write(f"  └─ {rule.get('법령명한글', 'N/A')}")
+        
+        # 행정규칙
+        admin_total = sum(len(v) for v in hierarchy['admin_rules'].values())
+        if admin_total > 0:
+            st.markdown(f"**📑 행정규칙 ({admin_total}개)**")
+            
+            if hierarchy['admin_rules']['directive']:
+                st.write(f"  **훈령 ({len(hierarchy['admin_rules']['directive'])}개)**")
+                for item in hierarchy['admin_rules']['directive'][:5]:
+                    st.write(f"    └─ {item.get('행정규칙명', 'N/A')}")
+                if len(hierarchy['admin_rules']['directive']) > 5:
+                    st.write(f"    ... 외 {len(hierarchy['admin_rules']['directive'])-5}개")
+            
+            if hierarchy['admin_rules']['regulation']:
+                st.write(f"  **예규 ({len(hierarchy['admin_rules']['regulation'])}개)**")
+                for item in hierarchy['admin_rules']['regulation'][:5]:
+                    st.write(f"    └─ {item.get('행정규칙명', 'N/A')}")
+                if len(hierarchy['admin_rules']['regulation']) > 5:
+                    st.write(f"    ... 외 {len(hierarchy['admin_rules']['regulation'])-5}개")
+            
+            if hierarchy['admin_rules']['notice']:
+                st.write(f"  **고시 ({len(hierarchy['admin_rules']['notice'])}개)**")
+                for item in hierarchy['admin_rules']['notice'][:5]:
+                    st.write(f"    └─ {item.get('행정규칙명', 'N/A')}")
+                if len(hierarchy['admin_rules']['notice']) > 5:
+                    st.write(f"    ... 외 {len(hierarchy['admin_rules']['notice'])-5}개")
+            
+            if hierarchy['admin_rules']['guideline']:
+                st.write(f"  **지침 ({len(hierarchy['admin_rules']['guideline'])}개)**")
+                for item in hierarchy['admin_rules']['guideline'][:5]:
+                    st.write(f"    └─ {item.get('행정규칙명', 'N/A')}")
+                if len(hierarchy['admin_rules']['guideline']) > 5:
+                    st.write(f"    ... 외 {len(hierarchy['admin_rules']['guideline'])-5}개")
+        
+        # 자치법규
+        if hierarchy['local_laws']:
+            st.markdown(f"**🏛️ 자치법규 ({len(hierarchy['local_laws'])}개)**")
+            for local in hierarchy['local_laws'][:5]:
+                st.write(f"  └─ {local.get('자치법규명', 'N/A')} ({local.get('지자체명', '')})")
+            if len(hierarchy['local_laws']) > 5:
+                st.write(f"  ... 외 {len(hierarchy['local_laws'])-5}개")
+        
+        # 별표서식
+        if hierarchy['attachments']:
+            st.markdown(f"**📎 별표서식 ({len(hierarchy['attachments'])}개)**")
+            for attach in hierarchy['attachments'][:5]:
+                name = attach.get('별표서식명', attach.get('별표명', 'N/A'))
+                st.write(f"  └─ {name}")
+            if len(hierarchy['attachments']) > 5:
+                st.write(f"  ... 외 {len(hierarchy['attachments'])-5}개")
+
+def generate_enhanced_laws_markdown(laws: List[Dict], hierarchy_info: Dict, law_searcher, include_history: bool) -> str:
+    """법령을 체계도 기반으로 구조화된 마크다운으로 변환"""
+    md_content = f"# 법령 체계도 기반 통합 문서\n\n"
+    md_content += f"**생성일시:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+    md_content += f"**총 법령 수:** {len(laws)}개\n\n"
+    md_content += "---\n\n"
+    
+    # 체계도 요약
+    if hierarchy_info:
+        md_content += "## 📊 법령 체계도 요약\n\n"
+        for main_law, hierarchy in hierarchy_info.items():
+            md_content += f"### {main_law}\n\n"
+            md_content += f"- **시행령:** {len(hierarchy.get('decree', []))}개\n"
+            md_content += f"- **시행규칙:** {len(hierarchy.get('rule', []))}개\n"
+            admin_total = sum(len(v) for v in hierarchy.get('admin_rules', {}).values())
+            md_content += f"- **행정규칙:** {admin_total}개\n"
+            md_content += f"  - 훈령: {len(hierarchy.get('admin_rules', {}).get('directive', []))}개\n"
+            md_content += f"  - 예규: {len(hierarchy.get('admin_rules', {}).get('regulation', []))}개\n"
+            md_content += f"  - 고시: {len(hierarchy.get('admin_rules', {}).get('notice', []))}개\n"
+            md_content += f"  - 지침: {len(hierarchy.get('admin_rules', {}).get('guideline', []))}개\n"
+            md_content += f"- **자치법규:** {len(hierarchy.get('local_laws', []))}개\n"
+            md_content += f"- **별표서식:** {len(hierarchy.get('attachments', []))}개\n\n"
+        md_content += "---\n\n"
+    
+    # 법령별 상세 내용
+    md_content += "## 📚 법령 상세 내용\n\n"
+    
+    # 카테고리별로 정리
+    categories = {
+        '법률': [],
+        '시행령': [],
+        '시행규칙': [],
+        '행정규칙': [],
+        '자치법규': [],
+        '기타': []
+    }
+    
+    for law in laws:
+        if law.get('법령구분명'):
+            if '법률' in law['법령구분명']:
+                categories['법률'].append(law)
+            elif '시행령' in law.get('법령명한글', ''):
+                categories['시행령'].append(law)
+            elif '시행규칙' in law.get('법령명한글', ''):
+                categories['시행규칙'].append(law)
+            else:
+                categories['기타'].append(law)
+        elif law.get('행정규칙명'):
+            categories['행정규칙'].append(law)
+        elif law.get('자치법규명'):
+            categories['자치법규'].append(law)
+        else:
+            categories['기타'].append(law)
+    
+    # 각 카테고리별로 출력
+    for category_name, category_laws in categories.items():
+        if category_laws:
+            md_content += f"### 📋 {category_name} ({len(category_laws)}개)\n\n"
+            
+            for idx, law in enumerate(category_laws, 1):
+                law_id = law.get('법령ID') or law.get('법령일련번호')
+                law_name = law.get('법령명한글') or law.get('행정규칙명') or law.get('자치법규명', 'N/A')
+                
+                md_content += f"#### {idx}. {law_name}\n\n"
+                
+                # 메타데이터
+                if law.get('공포일자'):
+                    md_content += f"- **공포일자:** {law.get('공포일자')}\n"
+                if law.get('시행일자'):
+                    md_content += f"- **시행일자:** {law.get('시행일자')}\n"
+                if law.get('발령일자'):
+                    md_content += f"- **발령일자:** {law.get('발령일자')}\n"
+                if law.get('소관부처명'):
+                    md_content += f"- **소관부처:** {law.get('소관부처명')}\n"
+                if law.get('지자체명'):
+                    md_content += f"- **지자체:** {law.get('지자체명')}\n"
+                
+                md_content += "\n"
+                
+                # 본문 조회 (법령만)
+                if law_id and category_name in ['법률', '시행령', '시행규칙']:
+                    try:
+                        detail = law_searcher.get_law_detail(law_id=law_id)
+                        if detail and 'error' not in detail:
+                            content = detail.get('조문내용', detail.get('법령내용', ''))
+                            if content:
+                                md_content += "##### 조문 내용\n\n"
+                                md_content += content[:10000]  # 처음 10000자만
+                                if len(content) > 10000:
+                                    md_content += "\n\n... (이하 생략)\n"
+                            md_content += "\n\n"
+                    except Exception as e:
+                        logger.error(f"법령 상세 조회 실패: {e}")
+                
+                md_content += "---\n\n"
+    
+    return md_content
+
+def create_enhanced_laws_zip(laws: List[Dict], hierarchy_info: Dict, law_searcher, format_option: str, include_history: bool) -> bytes:
+    """법령을 체계도 기반으로 구조화된 ZIP 파일로 압축"""
+    zip_buffer = io.BytesIO()
+    
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        # 폴더 구조 생성
+        folders = {
+            '01_법률': [],
+            '02_시행령': [],
+            '03_시행규칙': [],
+            '04_행정규칙/훈령': [],
+            '04_행정규칙/예규': [],
+            '04_행정규칙/고시': [],
+            '04_행정규칙/지침': [],
+            '05_자치법규': [],
+            '06_별표서식': [],
+            '99_기타': []
+        }
+        
+        # 법령 분류
+        for law in laws:
+            if law.get('법령구분명'):
+                if '법률' in law['법령구분명']:
+                    folders['01_법률'].append(law)
+                elif '시행령' in law.get('법령명한글', ''):
+                    folders['02_시행령'].append(law)
+                elif '시행규칙' in law.get('법령명한글', ''):
+                    folders['03_시행규칙'].append(law)
+                else:
+                    folders['99_기타'].append(law)
+            elif law.get('행정규칙명'):
+                rule_name = law.get('행정규칙명', '')
+                if '훈령' in rule_name or law.get('행정규칙종류') == '훈령':
+                    folders['04_행정규칙/훈령'].append(law)
+                elif '예규' in rule_name or law.get('행정규칙종류') == '예규':
+                    folders['04_행정규칙/예규'].append(law)
+                elif '고시' in rule_name or law.get('행정규칙종류') == '고시':
+                    folders['04_행정규칙/고시'].append(law)
+                elif '지침' in rule_name or law.get('행정규칙종류') == '지침':
+                    folders['04_행정규칙/지침'].append(law)
+                else:
+                    folders['04_행정규칙/훈령'].append(law)  # 기본값
+            elif law.get('자치법규명'):
+                folders['05_자치법규'].append(law)
+            elif law.get('별표서식명') or law.get('별표명'):
+                folders['06_별표서식'].append(law)
+            else:
+                folders['99_기타'].append(law)
+        
+        # 각 폴더별로 파일 생성
+        for folder_path, folder_laws in folders.items():
+            if folder_laws:
+                for idx, law in enumerate(folder_laws, 1):
+                    law_id = law.get('법령ID') or law.get('법령일련번호')
+                    law_name = (law.get('법령명한글') or law.get('행정규칙명') or 
+                               law.get('자치법규명') or law.get('별표서식명') or 'N/A')
+                    
+                    # 파일명 정리 (특수문자 제거)
+                    safe_name = re.sub(r'[<>:"/\\|?*]', '_', law_name)[:100]  # 파일명 길이 제한
+                    
+                    if format_option == "Markdown (.md)":
+                        file_ext = "md"
+                        content = f"# {law_name}\n\n"
+                        content += f"**공포일자:** {law.get('공포일자', law.get('발령일자', 'N/A'))}\n"
+                        content += f"**시행일자:** {law.get('시행일자', 'N/A')}\n"
+                        content += f"**소관부처:** {law.get('소관부처명', law.get('지자체명', 'N/A'))}\n\n"
+                        
+                        # 법령 본문 조회
+                        if law_id and '행정규칙' not in folder_path and '자치법규' not in folder_path:
+                            try:
+                                detail = law_searcher.get_law_detail(law_id=law_id)
+                                if detail and 'error' not in detail:
+                                    content += "## 조문 내용\n\n"
+                                    content += detail.get('조문내용', detail.get('법령내용', ''))
+                            except:
+                                pass
+                    
+                    elif format_option == "HTML (.html)":
+                        file_ext = "html"
+                        content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{law_name}</title>
+    <style>
+        body {{ font-family: 'Malgun Gothic', sans-serif; padding: 20px; }}
+        h1 {{ color: #333; }}
+        .metadata {{ background: #f5f5f5; padding: 10px; margin: 10px 0; }}
+    </style>
+</head>
+<body>
+    <h1>{law_name}</h1>
+    <div class="metadata">
+        <p><strong>공포일자:</strong> {law.get('공포일자', law.get('발령일자', 'N/A'))}</p>
+        <p><strong>시행일자:</strong> {law.get('시행일자', 'N/A')}</p>
+        <p><strong>소관부처:</strong> {law.get('소관부처명', law.get('지자체명', 'N/A'))}</p>
+    </div>
+"""
+                        if law_id:
+                            try:
+                                detail = law_searcher.get_law_detail(law_id=law_id)
+                                if detail and 'error' not in detail:
+                                    content += f"<h2>조문 내용</h2>\n<pre>{detail.get('조문내용', '')}</pre>"
+                            except:
+                                pass
+                        content += "</body></html>"
+                    
+                    elif format_option == "Text (.txt)":
+                        file_ext = "txt"
+                        content = f"{law_name}\n"
+                        content += "=" * 50 + "\n"
+                        content += f"공포일자: {law.get('공포일자', law.get('발령일자', 'N/A'))}\n"
+                        content += f"시행일자: {law.get('시행일자', 'N/A')}\n"
+                        content += f"소관부처: {law.get('소관부처명', law.get('지자체명', 'N/A'))}\n\n"
+                    
+                    else:  # JSON
+                        file_ext = "json"
+                        content = json.dumps(law, ensure_ascii=False, indent=2)
+                    
+                    # ZIP에 파일 추가
+                    file_name = f"{folder_path}/{idx:03d}_{safe_name}.{file_ext}"
+                    zip_file.writestr(file_name, content.encode('utf-8'))
+        
+        # 메타데이터 파일 추가
+        metadata = {
+            'generated_at': datetime.now().isoformat(),
+            'total_files': len(laws),
+            'hierarchy': hierarchy_info,
+            'statistics': {
+                folder: len(items) for folder, items in folders.items() if items
+            }
+        }
+        zip_file.writestr('00_metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2).encode('utf-8'))
+        
+        # README 파일 추가
+        readme_content = f"""# 법령 체계도 기반 통합 다운로드
+
+생성일시: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+총 파일 수: {len(laws)}개
+
+## 폴더 구조
+- 01_법률: 기본 법률
+- 02_시행령: 법률 시행령
+- 03_시행규칙: 법률 시행규칙
+- 04_행정규칙: 훈령, 예규, 고시, 지침
+- 05_자치법규: 지방자치단체 조례, 규칙
+- 06_별표서식: 법령 별표 및 서식
+- 99_기타: 분류되지 않은 법령
+
+## 파일 형식
+- 형식: {format_option}
+- 인코딩: UTF-8
+"""
+        zip_file.writestr('00_README.md', readme_content.encode('utf-8'))
+    
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
+# ========================= Other Functions (Unchanged) =========================
 
 def render_unified_search_tab():
     """통합 스마트 검색 탭 - 모든 검색 기능 통합"""
@@ -291,8 +1029,6 @@ def render_unified_search_tab():
             except Exception as e:
                 st.error(f"검색 중 오류 발생: {str(e)}")
                 logger.exception(f"Search error: {e}")
-
-# ========================= Enhanced AI Analysis Tab =========================
 
 def render_ai_analysis_tab():
     """AI 법률 분석 탭 - 파일 업로드 및 분석 기능 통합"""
@@ -518,231 +1254,6 @@ def render_ai_analysis_tab():
             except Exception as e:
                 st.error(f"AI 분석 중 오류 발생: {str(e)}")
                 logger.exception(f"AI analysis error: {e}")
-
-# ========================= Law Download Tab =========================
-
-def render_law_download_tab():
-    """법령 체계도 기반 일괄 다운로드 탭"""
-    st.header("📥 법령 일괄 다운로드")
-    
-    clients = get_api_clients()
-    
-    if not clients.get('law_searcher'):
-        st.error("법령 검색 모듈을 초기화할 수 없습니다.")
-        return
-    
-    st.markdown("""
-    ### 📋 법령 체계도 기반 다운로드
-    
-    법령과 관련된 하위 법령(시행령, 시행규칙, 감독규정 등)을 한 번에 다운로드할 수 있습니다.
-    """)
-    
-    # 법령 검색
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        law_name = st.text_input(
-            "법령명 입력",
-            placeholder="예: 상호저축은행법, 도로교통법, 개인정보보호법",
-            key="download_law_name"
-        )
-    
-    with col2:
-        st.write("")
-        search_btn = st.button("🔍 체계도 조회", type="primary", use_container_width=True, key="search_structure_btn")
-    
-    # 다운로드 옵션
-    with st.expander("⚙️ 다운로드 옵션", expanded=False):
-        col1, col2 = st.columns(2)
-        with col1:
-            include_types = st.multiselect(
-                "포함할 법령 유형",
-                ["법률", "시행령", "시행규칙", "행정규칙", "고시", "훈령", "예규"],
-                default=["법률", "시행령", "시행규칙"],
-                key="include_types"
-            )
-        
-        with col2:
-            format_option = st.selectbox(
-                "다운로드 형식",
-                ["Markdown (.md)", "Text (.txt)", "JSON (.json)"],
-                key="format_option"
-            )
-            
-            include_history = st.checkbox("법령 연혁 포함", value=False, key="include_history")
-    
-    # 체계도 조회 및 다운로드
-    if search_btn and law_name:
-        with st.spinner(f'"{law_name}" 법령 체계도 조회 중...'):
-            try:
-                law_searcher = clients['law_searcher']
-                
-                # 1. 주 법령 검색
-                main_law_result = law_searcher.search_laws(
-                    query=law_name,
-                    display=10
-                )
-                
-                if main_law_result.get('totalCnt', 0) == 0:
-                    st.warning(f"'{law_name}'에 대한 검색 결과가 없습니다.")
-                    return
-                
-                # 검색 결과 표시
-                st.markdown("### 🔍 검색된 법령")
-                
-                laws_to_download = []
-                
-                for idx, law in enumerate(main_law_result.get('results', [])[:5], 1):
-                    law_id = law.get('법령ID') or law.get('법령일련번호')
-                    law_title = law.get('법령명한글', 'N/A')
-                    
-                    col1, col2, col3 = st.columns([3, 1, 1])
-                    with col1:
-                        st.write(f"{idx}. {law_title}")
-                    with col2:
-                        st.write(f"공포: {law.get('공포일자', 'N/A')}")
-                    with col3:
-                        if st.checkbox("선택", key=f"select_law_{idx}", value=idx==1):
-                            laws_to_download.append({
-                                'id': law_id,
-                                'title': law_title,
-                                'law': law
-                            })
-                
-                if laws_to_download:
-                    st.markdown("---")
-                    
-                    # 2. 관련 법령 체계도 조회
-                    if st.button("📊 법령 체계도 조회", key="get_structure_btn"):
-                        with st.spinner("법령 체계도 및 관련 법령 조회 중..."):
-                            all_related_laws = []
-                            
-                            for selected_law in laws_to_download:
-                                st.markdown(f"#### 📋 {selected_law['title']} 관련 법령")
-                                
-                                # 법령 체계도 조회
-                                try:
-                                    # 위임 법령 조회
-                                    delegated = law_searcher.get_delegated_laws(
-                                        law_id=selected_law['id']
-                                    )
-                                    
-                                    # 법령 체계도 조회
-                                    structure = law_searcher.get_law_structure_detail(
-                                        law_id=selected_law['id']
-                                    )
-                                    
-                                    # 관련 법령 수집
-                                    related_laws = [selected_law['law']]  # 주 법령 포함
-                                    
-                                    # 하위 법령 검색 (시행령, 시행규칙 등)
-                                    base_name = selected_law['title'].replace('법', '').strip()
-                                    
-                                    # 시행령 검색
-                                    if "시행령" in include_types:
-                                        decree_result = law_searcher.search_laws(
-                                            query=f"{base_name} 시행령",
-                                            display=5
-                                        )
-                                        if decree_result.get('results'):
-                                            related_laws.extend(decree_result['results'])
-                                    
-                                    # 시행규칙 검색
-                                    if "시행규칙" in include_types:
-                                        rule_result = law_searcher.search_laws(
-                                            query=f"{base_name} 시행규칙",
-                                            display=5
-                                        )
-                                        if rule_result.get('results'):
-                                            related_laws.extend(rule_result['results'])
-                                    
-                                    # 행정규칙 검색
-                                    if "행정규칙" in include_types or "고시" in include_types:
-                                        admin_result = clients.get('treaty_admin_searcher').search_admin_rules(
-                                            query=base_name,
-                                            display=10
-                                        )
-                                        if admin_result.get('rules'):
-                                            related_laws.extend(admin_result['rules'])
-                                    
-                                    # 중복 제거
-                                    unique_laws = []
-                                    seen_ids = set()
-                                    for law in related_laws:
-                                        law_id = law.get('법령ID') or law.get('법령일련번호') or law.get('행정규칙ID')
-                                        if law_id and law_id not in seen_ids:
-                                            seen_ids.add(law_id)
-                                            unique_laws.append(law)
-                                    
-                                    all_related_laws.extend(unique_laws)
-                                    
-                                    # 결과 표시
-                                    st.success(f"✅ {len(unique_laws)}개 관련 법령 발견")
-                                    
-                                    # 관련 법령 목록
-                                    with st.expander(f"관련 법령 목록 ({len(unique_laws)}개)"):
-                                        for related_law in unique_laws:
-                                            title = related_law.get('법령명한글') or related_law.get('행정규칙명', 'N/A')
-                                            st.write(f"- {title}")
-                                    
-                                except Exception as e:
-                                    st.error(f"체계도 조회 실패: {str(e)}")
-                            
-                            # 3. 다운로드 준비
-                            if all_related_laws:
-                                st.markdown("---")
-                                st.markdown(f"### 💾 다운로드 준비 완료")
-                                st.info(f"총 {len(all_related_laws)}개 법령이 다운로드 준비되었습니다.")
-                                
-                                # 다운로드 버튼
-                                col1, col2, col3 = st.columns(3)
-                                
-                                with col1:
-                                    # Markdown 형식 다운로드
-                                    if format_option == "Markdown (.md)":
-                                        md_content = generate_laws_markdown(all_related_laws, law_searcher, include_history)
-                                        st.download_button(
-                                            "📥 Markdown 다운로드",
-                                            data=md_content,
-                                            file_name=f"{law_name}_laws_{datetime.now().strftime('%Y%m%d')}.md",
-                                            mime="text/markdown",
-                                            key="download_md",
-                                            use_container_width=True
-                                        )
-                                
-                                with col2:
-                                    # ZIP 파일로 개별 다운로드
-                                    zip_buffer = create_laws_zip(all_related_laws, law_searcher, format_option, include_history)
-                                    st.download_button(
-                                        "📦 ZIP 다운로드 (개별 파일)",
-                                        data=zip_buffer,
-                                        file_name=f"{law_name}_laws_{datetime.now().strftime('%Y%m%d')}.zip",
-                                        mime="application/zip",
-                                        key="download_zip",
-                                        use_container_width=True
-                                    )
-                                
-                                with col3:
-                                    # JSON 형식 다운로드
-                                    if st.button("📊 JSON 다운로드", key="download_json", use_container_width=True):
-                                        json_content = json.dumps(all_related_laws, ensure_ascii=False, indent=2)
-                                        st.download_button(
-                                            "💾 JSON 파일 다운로드",
-                                            data=json_content,
-                                            file_name=f"{law_name}_laws_{datetime.now().strftime('%Y%m%d')}.json",
-                                            mime="application/json",
-                                            key="download_json_file"
-                                        )
-                                
-                                # 다운로드 이력 저장
-                                st.session_state.downloaded_laws.append({
-                                    'law_name': law_name,
-                                    'count': len(all_related_laws),
-                                    'timestamp': datetime.now().isoformat()
-                                })
-                
-            except Exception as e:
-                st.error(f"법령 체계도 조회 중 오류 발생: {str(e)}")
-                logger.exception(f"Law structure search error: {e}")
 
 # ========================= Helper Functions =========================
 
@@ -1097,87 +1608,6 @@ def perform_context_search(query: str, targets: List[str], clients: Dict) -> Dic
     
     return context
 
-def generate_laws_markdown(laws: List[Dict], law_searcher, include_history: bool) -> str:
-    """법령을 마크다운 형식으로 변환"""
-    md_content = f"# 법령 모음\n\n"
-    md_content += f"**생성일시:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-    md_content += f"**총 법령 수:** {len(laws)}개\n\n"
-    md_content += "---\n\n"
-    
-    for idx, law in enumerate(laws, 1):
-        law_id = law.get('법령ID') or law.get('법령일련번호')
-        law_name = law.get('법령명한글') or law.get('행정규칙명', 'N/A')
-        
-        md_content += f"## {idx}. {law_name}\n\n"
-        md_content += f"- **공포일자:** {law.get('공포일자', 'N/A')}\n"
-        md_content += f"- **시행일자:** {law.get('시행일자', 'N/A')}\n"
-        md_content += f"- **소관부처:** {law.get('소관부처명', 'N/A')}\n\n"
-        
-        # 법령 본문 조회
-        try:
-            if law_id:
-                detail = law_searcher.get_law_detail(law_id=law_id)
-                if detail and 'error' not in detail:
-                    # 본문 추가 (간략화)
-                    content = detail.get('조문내용', detail.get('법령내용', ''))
-                    if content:
-                        md_content += "### 조문 내용\n\n"
-                        md_content += content[:5000]  # 처음 5000자만
-                        if len(content) > 5000:
-                            md_content += "\n\n... (이하 생략)\n"
-                    md_content += "\n\n"
-        except Exception as e:
-            logger.error(f"법령 상세 조회 실패: {e}")
-        
-        md_content += "---\n\n"
-    
-    return md_content
-
-def create_laws_zip(laws: List[Dict], law_searcher, format_option: str, include_history: bool) -> bytes:
-    """법령을 ZIP 파일로 압축"""
-    zip_buffer = io.BytesIO()
-    
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for idx, law in enumerate(laws, 1):
-            law_id = law.get('법령ID') or law.get('법령일련번호')
-            law_name = law.get('법령명한글') or law.get('행정규칙명', 'N/A')
-            
-            # 파일명 정리 (특수문자 제거)
-            safe_name = re.sub(r'[<>:"/\\|?*]', '_', law_name)
-            
-            if format_option == "Markdown (.md)":
-                file_ext = "md"
-                content = f"# {law_name}\n\n"
-                content += f"**공포일자:** {law.get('공포일자', 'N/A')}\n"
-                content += f"**시행일자:** {law.get('시행일자', 'N/A')}\n\n"
-                
-                # 법령 본문 조회
-                try:
-                    if law_id:
-                        detail = law_searcher.get_law_detail(law_id=law_id)
-                        if detail and 'error' not in detail:
-                            content += detail.get('조문내용', detail.get('법령내용', ''))
-                except:
-                    pass
-                
-            elif format_option == "Text (.txt)":
-                file_ext = "txt"
-                content = f"{law_name}\n"
-                content += "=" * 50 + "\n"
-                content += f"공포일자: {law.get('공포일자', 'N/A')}\n"
-                content += f"시행일자: {law.get('시행일자', 'N/A')}\n\n"
-                
-            else:  # JSON
-                file_ext = "json"
-                content = json.dumps(law, ensure_ascii=False, indent=2)
-            
-            # ZIP에 파일 추가
-            file_name = f"{idx:03d}_{safe_name}.{file_ext}"
-            zip_file.writestr(file_name, content.encode('utf-8'))
-    
-    zip_buffer.seek(0)
-    return zip_buffer.getvalue()
-
 # ========================= Sidebar =========================
 
 def render_sidebar():
@@ -1261,6 +1691,9 @@ def render_sidebar():
             1. **통합 검색**: 자연어 또는 키워드로 검색
             2. **AI 분석**: 문서 업로드 및 법률 분석
             3. **법령 다운로드**: 관련 법령 일괄 다운로드
+               - 체계도 기반으로 모든 하위 법령 포함
+               - 행정규칙 (훈령, 예규, 고시, 지침)
+               - 자치법규, 별표서식 등
             
             ### 문의
             - 이메일: support@klaw.com
@@ -1286,7 +1719,7 @@ def main():
     
     # 메인 타이틀
     st.title("⚖️ K-Law Assistant Pro")
-    st.markdown("**AI 기반 통합 법률 검색 및 분석 시스템**")
+    st.markdown("**AI 기반 통합 법률 검색 및 분석 시스템 (체계도 완전 다운로드 지원)**")
     
     # API 키 확인
     if not st.session_state.api_keys.get('law_api_key'):
@@ -1296,7 +1729,7 @@ def main():
     tabs = st.tabs([
         "🔍 통합 스마트 검색",
         "🤖 AI 법률 분석",
-        "📥 법령 다운로드"
+        "📥 법령 체계도 다운로드"
     ])
     
     # Tab 1: 통합 스마트 검색
@@ -1307,7 +1740,7 @@ def main():
     with tabs[1]:
         render_ai_analysis_tab()
     
-    # Tab 3: 법령 다운로드
+    # Tab 3: 법령 다운로드 (개선된 버전)
     with tabs[2]:
         render_law_download_tab()
 
