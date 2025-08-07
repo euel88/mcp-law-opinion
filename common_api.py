@@ -497,7 +497,7 @@ class LawAPIClient:
 class OpenAIHelper:
     """OpenAI API 헬퍼 클래스 - 확장된 기능"""
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "o3"):
         """
         초기화
         
