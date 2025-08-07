@@ -28,7 +28,7 @@ class LawAPIClient:
     실제 HTTP 요청을 처리하는 저수준 클래스
     """
     
-    BASE_URL = "http://www.law.go.kr/DRF"
+    BASE_URL = "https://www.law.go.kr/DRF"
     
     def __init__(self, oc_key: str):
         """
