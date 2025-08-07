@@ -1,7 +1,7 @@
 """
 K-Law Assistant - 통합 법률 검토 지원 시스템
-Main Application with Streamlit UI (Fixed Version 3.1)
-모든 위젯 ID 충돌 문제 해결
+Main Application with Streamlit UI (Fixed Version 4.0)
+API 호출 및 데이터 처리 오류 수정
 """
 
 import os
@@ -23,7 +23,7 @@ import pandas as pd
 
 # 로깅 설정
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # DEBUG로 변경하여 더 많은 정보 확인
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -78,25 +78,54 @@ def get_api_clients():
         law_api_key = st.session_state.api_keys.get('law_api_key', '')
         openai_api_key = st.session_state.api_keys.get('openai_api_key', '')
         
+        if not law_api_key:
+            st.warning("⚠️ 법제처 API 키가 설정되지 않았습니다.")
+            logger.warning("Law API key not found")
+            return {}
+        
         clients = {}
         
         # 기본 API 클라이언트
-        clients['law_client'] = LawAPIClient(oc_key=law_api_key) if law_api_key else None
+        clients['law_client'] = LawAPIClient(oc_key=law_api_key)
         clients['ai_helper'] = OpenAIHelper(api_key=openai_api_key) if openai_api_key else None
         
         # 각 검색 모듈 초기화
-        if clients['law_client']:
+        try:
             clients['law_searcher'] = LawSearcher(oc_key=law_api_key)
+            logger.info("LawSearcher initialized")
+        except Exception as e:
+            logger.error(f"LawSearcher init failed: {e}")
+            
+        try:
             clients['case_searcher'] = CaseSearcher(api_client=clients['law_client'], ai_helper=clients['ai_helper'])
+            logger.info("CaseSearcher initialized")
+        except Exception as e:
+            logger.error(f"CaseSearcher init failed: {e}")
+            
+        try:
             clients['advanced_case_searcher'] = AdvancedCaseSearcher(api_client=clients['law_client'], ai_helper=clients['ai_helper'])
+            logger.info("AdvancedCaseSearcher initialized")
+        except Exception as e:
+            logger.error(f"AdvancedCaseSearcher init failed: {e}")
+            
+        try:
             clients['committee_searcher'] = CommitteeDecisionSearcher(api_client=clients['law_client'])
+            logger.info("CommitteeDecisionSearcher initialized")
+        except Exception as e:
+            logger.error(f"CommitteeDecisionSearcher init failed: {e}")
+            
+        try:
             clients['treaty_admin_searcher'] = TreatyAdminSearcher(oc_key=law_api_key)
+            logger.info("TreatyAdminSearcher initialized")
+        except Exception as e:
+            logger.error(f"TreatyAdminSearcher init failed: {e}")
         
-        logger.info("All API clients initialized successfully")
+        logger.info(f"API clients initialized: {list(clients.keys())}")
         return clients
         
     except Exception as e:
         logger.error(f"API clients initialization failed: {str(e)}")
+        st.error(f"API 클라이언트 초기화 실패: {str(e)}")
         return {}
 
 # ========================= Sidebar UI =========================
@@ -183,7 +212,7 @@ def render_law_search_tab():
     
     clients = get_api_clients()
     if not clients.get('law_searcher'):
-        st.error("법령 검색 모듈을 초기화할 수 없습니다.")
+        st.error("법령 검색 모듈을 초기화할 수 없습니다. API 키를 확인해주세요.")
         return
     
     # 검색 유형 선택
@@ -232,6 +261,8 @@ def render_law_search_tab():
                 results = None
                 law_searcher = clients['law_searcher']
                 
+                logger.info(f"법령 검색 시작: {search_type}, 검색어: {query}")
+                
                 # 검색 유형별 처리
                 if search_type == "현행법령":
                     results = law_searcher.search_laws(
@@ -241,6 +272,7 @@ def render_law_search_tab():
                         sort={"법령명 오름차순": "lasc", "법령명 내림차순": "ldes",
                               "공포일자 오름차순": "dasc", "공포일자 내림차순": "ddes"}[sort_option]
                     )
+                    logger.debug(f"현행법령 검색 결과: {results}")
                 
                 elif search_type == "시행일법령":
                     results = law_searcher.search_effective_laws(
@@ -338,33 +370,47 @@ def render_law_search_tab():
                 # 결과 표시
                 if results:
                     if 'error' not in results:
-                        st.success(f"✅ {results.get('totalCnt', 0)}건의 결과를 찾았습니다.")
+                        total_count = results.get('totalCnt', 0)
+                        st.success(f"✅ {total_count}건의 결과를 찾았습니다.")
+                        
+                        # 검색 이력 저장
+                        if total_count > 0:
+                            st.session_state.search_history.append({
+                                'query': query,
+                                'timestamp': datetime.now().isoformat(),
+                                'type': search_type,
+                                'count': total_count
+                            })
                         
                         # 결과 표시
-                        if 'results' in results:
+                        if 'results' in results and results['results']:
                             for idx, item in enumerate(results['results'][:10], 1):
-                                with st.expander(f"{idx}. {item.get('법령명한글', item.get('title', 'N/A'))}"):
+                                with st.expander(f"{idx}. {item.get('법령명한글', item.get('법령명', item.get('title', 'N/A')))}"):
                                     # 기본 정보
                                     col1, col2 = st.columns(2)
                                     with col1:
                                         st.write(f"**공포일자:** {item.get('공포일자', 'N/A')}")
                                         st.write(f"**시행일자:** {item.get('시행일자', 'N/A')}")
                                     with col2:
-                                        st.write(f"**소관부처:** {item.get('소관부처명', 'N/A')}")
-                                        st.write(f"**법령구분:** {item.get('법령구분명', 'N/A')}")
+                                        st.write(f"**소관부처:** {item.get('소관부처명', item.get('소관부처', 'N/A'))}")
+                                        st.write(f"**법령구분:** {item.get('법령구분명', item.get('법령구분', 'N/A'))}")
                                     
                                     # 상세 조회 버튼
                                     if st.button(f"상세 조회", key=f"law_detail_{search_type}_{idx}"):
                                         detail = law_searcher.get_law_detail(
-                                            law_id=item.get('법령ID'),
+                                            law_id=item.get('법령ID', item.get('법령일련번호')),
                                             output_type="JSON"
                                         )
                                         st.json(detail)
+                        else:
+                            st.info("검색 결과가 없습니다. 다른 검색어를 시도해보세요.")
                     else:
-                        st.error(f"오류: {results['error']}")
+                        st.error(f"오류: {results.get('error', '알 수 없는 오류')}")
+                        logger.error(f"검색 오류: {results}")
                         
             except Exception as e:
                 st.error(f"검색 중 오류 발생: {str(e)}")
+                logger.exception(f"법령 검색 예외 발생: {e}")
 
 # ========================= Tab 2: 판례/심판례 검색 =========================
 
@@ -374,7 +420,7 @@ def render_case_search_tab():
     
     clients = get_api_clients()
     if not clients.get('case_searcher'):
-        st.error("판례 검색 모듈을 초기화할 수 없습니다.")
+        st.error("판례 검색 모듈을 초기화할 수 없습니다. API 키를 확인해주세요.")
         return
     
     case_searcher = clients['case_searcher']
@@ -414,6 +460,8 @@ def render_case_search_tab():
             try:
                 results = None
                 
+                logger.info(f"판례 검색 시작: {case_type}, 검색어: {query}")
+                
                 if case_type == "법원 판례":
                     results = case_searcher.search_court_cases(
                         query=query,
@@ -451,6 +499,8 @@ def render_case_search_tab():
                         search_in_content=search_in_content
                     )
                 
+                logger.debug(f"판례 검색 결과: {results}")
+                
                 # 결과 표시
                 if results and results.get('status') == 'success':
                     if case_type == "통합검색":
@@ -468,15 +518,32 @@ def render_case_search_tab():
                         total = results.get('total_count', 0)
                         st.success(f"✅ {total}건의 결과를 찾았습니다.")
                         
+                        # 검색 이력 저장
+                        if total > 0:
+                            st.session_state.search_history.append({
+                                'query': query,
+                                'timestamp': datetime.now().isoformat(),
+                                'type': case_type,
+                                'count': total
+                            })
+                        
                         items = results.get('cases') or results.get('decisions') or \
                                results.get('interpretations') or results.get('tribunals', [])
                         
-                        for idx, item in enumerate(items[:10], 1):
-                            with st.expander(f"{idx}. {item.get('title', 'N/A')}"):
-                                display_case_item(item)
+                        if items:
+                            for idx, item in enumerate(items[:10], 1):
+                                with st.expander(f"{idx}. {item.get('title', 'N/A')}"):
+                                    display_case_item(item)
+                        else:
+                            st.info("검색 결과가 없습니다. 다른 검색어를 시도해보세요.")
+                elif results:
+                    st.error(f"검색 실패: {results.get('message', results.get('error', '알 수 없는 오류'))}")
+                else:
+                    st.info("검색 결과가 없습니다.")
                 
             except Exception as e:
                 st.error(f"검색 중 오류 발생: {str(e)}")
+                logger.exception(f"판례 검색 예외 발생: {e}")
 
 # ========================= Tab 3: 위원회 결정문 검색 =========================
 
@@ -486,7 +553,7 @@ def render_committee_search_tab():
     
     clients = get_api_clients()
     if not clients.get('committee_searcher'):
-        st.error("위원회 검색 모듈을 초기화할 수 없습니다.")
+        st.error("위원회 검색 모듈을 초기화할 수 없습니다. API 키를 확인해주세요.")
         return
     
     committee_searcher = clients['committee_searcher']
@@ -536,6 +603,8 @@ def render_committee_search_tab():
                 all_results = {}
                 total_count = 0
                 
+                logger.info(f"위원회 검색 시작: {selected_committees}, 검색어: {query}")
+                
                 for committee_code in selected_committees:
                     result = committee_searcher.search_by_committee(
                         committee_code=committee_code,
@@ -578,6 +647,7 @@ def render_committee_search_tab():
                 
             except Exception as e:
                 st.error(f"검색 중 오류 발생: {str(e)}")
+                logger.exception(f"위원회 검색 예외 발생: {e}")
 
 # ========================= Tab 4: 조약/행정규칙/자치법규 =========================
 
@@ -587,7 +657,7 @@ def render_treaty_admin_tab():
     
     clients = get_api_clients()
     if not clients.get('treaty_admin_searcher'):
-        st.error("조약/행정규칙 검색 모듈을 초기화할 수 없습니다.")
+        st.error("조약/행정규칙 검색 모듈을 초기화할 수 없습니다. API 키를 확인해주세요.")
         return
     
     searcher = clients['treaty_admin_searcher']
@@ -656,6 +726,8 @@ def render_treaty_admin_tab():
             try:
                 results = None
                 
+                logger.info(f"조약/행정규칙 검색 시작: {search_type}, 검색어: {query}")
+                
                 # 검색 유형별 처리
                 if search_type == "조약":
                     cls = None
@@ -721,6 +793,8 @@ def render_treaty_admin_tab():
                         tribunal=tribunal_code
                     )
                 
+                logger.debug(f"조약/행정규칙 검색 결과: {results}")
+                
                 # 결과 표시
                 if results:
                     if 'error' not in results:
@@ -733,14 +807,18 @@ def render_treaty_admin_tab():
                                results.get('terms') or results.get('interpretations') or \
                                results.get('decisions') or results.get('results', [])
                         
-                        for idx, item in enumerate(items[:10], 1):
-                            with st.expander(f"{idx}. {get_item_title(item, search_type)}"):
-                                display_treaty_admin_item(item, search_type)
+                        if items:
+                            for idx, item in enumerate(items[:10], 1):
+                                with st.expander(f"{idx}. {get_item_title(item, search_type)}"):
+                                    display_treaty_admin_item(item, search_type)
+                        else:
+                            st.info("검색 결과가 없습니다. 다른 검색어를 시도해보세요.")
                     else:
                         st.error(f"오류: {results['error']}")
                         
             except Exception as e:
                 st.error(f"검색 중 오류 발생: {str(e)}")
+                logger.exception(f"조약/행정규칙 검색 예외 발생: {e}")
 
 # ========================= Tab 5: AI 법률 분석 =========================
 
@@ -868,7 +946,7 @@ def render_ai_analysis_tab():
                     # 관련 자료 검색
                     context = {}
                     if st.session_state.get('ai_auto_search'):
-                        # 여기서 실제 검색 수행
+                        # 실제 검색 수행
                         context = perform_context_search(question, search_targets, clients)
                     
                     result = ai_helper.analyze_legal_text(question, context)
@@ -915,6 +993,7 @@ def render_ai_analysis_tab():
                 
             except Exception as e:
                 st.error(f"AI 분석 중 오류 발생: {str(e)}")
+                logger.exception(f"AI 분석 예외 발생: {e}")
 
 # ========================= Tab 6: 고급 기능 =========================
 
@@ -1070,32 +1149,49 @@ def display_treaty_admin_item(item: Dict, search_type: str):
         st.write(content[:500] + "..." if len(content) > 500 else content)
 
 def perform_context_search(query: str, targets: List[str], clients: Dict) -> Dict:
-    """AI 분석을 위한 컨텍스트 검색"""
+    """AI 분석을 위한 컨텍스트 검색 - 실제 데이터만 반환"""
     context = {}
     
     try:
+        logger.info(f"Context search for: {query}, targets: {targets}")
+        
         if "법령" in targets and clients.get('law_searcher'):
             result = clients['law_searcher'].search_laws(query, display=5)
-            if result and 'results' in result:
+            logger.debug(f"Law search result: {result}")
+            # 실제 결과가 있을 때만 추가
+            if result and result.get('totalCnt', 0) > 0 and result.get('results'):
                 context['laws'] = result['results']
+                logger.info(f"Found {len(result['results'])} laws")
         
         if "판례" in targets and clients.get('case_searcher'):
             result = clients['case_searcher'].search_court_cases(query, display=5)
-            if result.get('status') == 'success':
+            logger.debug(f"Case search result: {result}")
+            # 실제 결과가 있을 때만 추가
+            if result.get('status') == 'success' and result.get('total_count', 0) > 0:
                 context['cases'] = result.get('cases', [])
+                logger.info(f"Found {len(result.get('cases', []))} cases")
         
         if "해석례" in targets and clients.get('case_searcher'):
             result = clients['case_searcher'].search_legal_interpretations(query, display=5)
-            if result.get('status') == 'success':
+            # 실제 결과가 있을 때만 추가
+            if result.get('status') == 'success' and result.get('total_count', 0) > 0:
                 context['interpretations'] = result.get('interpretations', [])
+                logger.info(f"Found {len(result.get('interpretations', []))} interpretations")
         
         if "위원회결정" in targets and clients.get('committee_searcher'):
             result = clients['committee_searcher'].search_all_committees(query, display_per_committee=3)
-            if result.get('success'):
+            # 실제 결과가 있을 때만 추가
+            if result.get('success') and result.get('all_decisions'):
                 context['committees'] = result.get('all_decisions', [])
+                logger.info(f"Found {len(result.get('all_decisions', []))} committee decisions")
     
     except Exception as e:
         logger.error(f"Context search error: {str(e)}")
+    
+    # 컨텍스트가 비어있으면 명시적으로 표시
+    if not context:
+        context['no_results'] = True
+        logger.warning("No context found for AI analysis")
     
     return context
 
@@ -1123,6 +1219,7 @@ def main():
     # API 키 확인
     if not st.session_state.api_keys.get('law_api_key'):
         st.warning("⚠️ 법제처 API 키가 설정되지 않았습니다. 사이드바에서 설정해주세요.")
+        st.info("테스트를 위해서는 https://open.law.go.kr 에서 API 키를 발급받아야 합니다.")
     
     # 탭 구성 - 모든 기능 포함
     tabs = st.tabs([
@@ -1176,8 +1273,9 @@ def main():
                     ai_searches = len(history_df[history_df['type'] == 'ai_analysis'])
                     st.metric("AI 분석", ai_searches)
             with col3:
-                today_searches = len(history_df[pd.to_datetime(history_df['timestamp']).dt.date == datetime.now().date()])
-                st.metric("오늘 검색", today_searches)
+                if 'timestamp' in history_df.columns:
+                    today_searches = len(history_df[pd.to_datetime(history_df['timestamp']).dt.date == datetime.now().date()])
+                    st.metric("오늘 검색", today_searches)
             
             # 검색 이력 차트
             st.subheader("검색 추이")
@@ -1188,7 +1286,10 @@ def main():
             
             # 최근 검색
             st.subheader("최근 검색 이력")
-            st.dataframe(history_df[['timestamp', 'query', 'type']].tail(10))
+            display_cols = ['timestamp', 'query', 'type']
+            display_cols = [col for col in display_cols if col in history_df.columns]
+            if display_cols:
+                st.dataframe(history_df[display_cols].tail(10))
         else:
             st.info("아직 검색 이력이 없습니다.")
     
