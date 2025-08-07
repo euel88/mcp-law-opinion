@@ -1,10 +1,10 @@
 """
 위원회 결정문 검색 모듈
 법제처 API를 통해 14개 위원회의 결정문을 검색하고 조회합니다.
+Python 3.13 호환 버전 - dataclass 제거
 """
 
 from typing import Dict, List, Optional, Any, Union
-from dataclasses import dataclass, field
 import logging
 from datetime import datetime, timedelta
 import xml.etree.ElementTree as ET
@@ -19,16 +19,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-@dataclass
 class CommitteeInfo:
-    """위원회 정보를 담는 데이터 클래스"""
-    code: str  # 위원회 코드 (예: ppc, ftc 등)
-    name: str  # 위원회 한글명
-    search_field: str  # 기본 검색 필드명
-    search_options: Dict[int, str]  # 검색 범위 옵션
-    sort_options: Dict[str, str]  # 정렬 옵션
-    list_fields: Dict[str, str]  # 목록 조회 시 필드 매핑
-    detail_fields: Dict[str, str]  # 상세 조회 시 필드 매핑
+    """위원회 정보를 담는 클래스 (dataclass 대신 일반 클래스 사용)"""
+    
+    def __init__(self, 
+                 code: str,
+                 name: str,
+                 search_field: str,
+                 search_options: Dict[int, str],
+                 sort_options: Dict[str, str],
+                 list_fields: Dict[str, str],
+                 detail_fields: Dict[str, str]):
+        self.code = code
+        self.name = name
+        self.search_field = search_field
+        self.search_options = search_options
+        self.sort_options = sort_options
+        self.list_fields = list_fields
+        self.detail_fields = detail_fields
 
 
 class CommitteeDecisionSearcher:
