@@ -708,7 +708,10 @@ class TreatyAdminSearcher:
         self,
         query: str = "",
         ministry: Literal["moelCgmExpc", "molitCgmExpc", "moefCgmExpc", "mofCgmExpc", 
-                          "moisCgmExpc", "meCgmExpc", "kcsCgmExpc", "ntsCgmExpc"],
+                          "moisCgmExpc", "meCgmExpc", "kcsCgmExpc", "ntsCgmExpc"] = "moelCgmExpc",  # 기본값 추가
+        search_type: int = 1,
+        query: str = "",
+        search_type: int = 1,
         search_type: int = 1,
         inq: Optional[int] = None,
         rpl: Optional[int] = None,
