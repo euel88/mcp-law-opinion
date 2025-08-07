@@ -177,7 +177,7 @@ class LawAPIClient:
     
     def search(self, target: str = None, **params) -> Dict[str, Any]:
         """
-        검색 API 호출 (수정된 버전)
+        검색 API 호출 (개선된 버전)
         
         Args:
             target: API 타겟 (law, prec, detc 등)
@@ -186,33 +186,36 @@ class LawAPIClient:
         Returns:
             API 응답 (JSON 딕셔너리)
         """
-        # target 처리 - params에 있으면 우선 사용
+        # target 처리
         if 'target' in params:
-            target = params['target']
+            target = params.pop('target')  # params에서 제거하고 사용
         elif not target:
             raise ValueError("target 파라미터가 필요합니다.")
         
         # URL 설정
         url = f"{self.BASE_URL}/lawSearch.do"
         
+        # None 값 제거 (중요!)
+        filtered_params = {k: v for k, v in params.items() if v is not None}
+        
         # 필수 파라미터 설정
-        params['OC'] = self.oc_key
-        params['target'] = target
+        filtered_params['OC'] = self.oc_key
+        filtered_params['target'] = target
         
         # type 파라미터가 없으면 JSON 기본값 설정
-        if 'type' not in params:
-            params['type'] = 'json'
+        if 'type' not in filtered_params:
+            filtered_params['type'] = 'json'
         
         # query가 없으면 기본값 설정 (일부 API는 query가 필수)
-        if 'query' not in params and target in ['law', 'prec', 'detc', 'expc', 'decc', 
+        if 'query' not in filtered_params and target in ['law', 'prec', 'detc', 'expc', 'decc', 
                                                   'admrul', 'ordin', 'trty']:
-            params['query'] = '*'
+            filtered_params['query'] = '*'
         
         logger.info(f"API 호출: {url}")
-        logger.debug(f"파라미터: {params}")
+        logger.debug(f"파라미터: {filtered_params}")
         
         # 캐시 확인
-        cache_key = self.cache._generate_key(f"{target}_search", params)
+        cache_key = self.cache._generate_key(f"{target}_search", filtered_params)
         cached_data = self.cache.get(cache_key)
         if cached_data:
             return cached_data
@@ -220,14 +223,27 @@ class LawAPIClient:
         # 재시도 로직
         for attempt in range(self.retry_count):
             try:
-                response = self.session.get(url, params=params, timeout=30)
+                response = self.session.get(url, params=filtered_params, timeout=30)
+                
+                # 상태 코드 확인
+                if response.status_code != 200:
+                    logger.warning(f"API 응답 상태 코드: {response.status_code}")
+                    if attempt < self.retry_count - 1:
+                        time.sleep(self.retry_delay * (attempt + 1))
+                        continue
+                    return {
+                        'error': f'HTTP {response.status_code}',
+                        'totalCnt': 0,
+                        'results': []
+                    }
+                
                 response.raise_for_status()
                 
                 # Content-Type 확인
                 content_type = response.headers.get('Content-Type', '')
                 
                 # JSON 응답 처리
-                if params['type'].lower() == 'json' or 'json' in content_type.lower():
+                if 'json' in content_type.lower() or filtered_params['type'].lower() == 'json':
                     try:
                         result = response.json()
                         
@@ -242,15 +258,15 @@ class LawAPIClient:
                         
                     except json.JSONDecodeError as e:
                         logger.error(f"JSON 파싱 실패: {str(e)}")
+                        logger.debug(f"응답 내용: {response.text[:500]}")
+                        
                         # XML로 재시도
                         if attempt < self.retry_count - 1:
-                            params['type'] = 'xml'
+                            filtered_params['type'] = 'xml'
                             continue
-                        return {
-                            'error': 'JSON 파싱 실패',
-                            'raw': response.text[:500],
-                            'totalCnt': 0
-                        }
+                        
+                        # XML 파싱 시도
+                        return self._parse_xml_response(response.text, target)
                 
                 # XML 응답 처리
                 else:
