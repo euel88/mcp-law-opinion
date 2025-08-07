@@ -1,134 +1,134 @@
 # ========================================
-# PYTHON VERSION REQUIREMENT
+# K-Law Assistant - Production Requirements
+# Streamlit Cloud Deployment Version
+# Last Updated: 2025-01-01
+# Python Version: 3.8 - 3.12
 # ========================================
-# CRITICAL: Python >=3.8,<3.13 required
-# Python 3.13 causes TypedDict compatibility issues
+
 # ========================================
 # Core Dependencies
 # ========================================
-# Streamlit - Main framework (pinned for stability)
+# Web Framework
 streamlit==1.31.1
-# API and Network
+
+# HTTP & API Calls
 requests==2.31.0
-aiohttp==3.9.5
 urllib3==2.2.0
-# Environment and Configuration
+httpx==0.25.2
+
+# Async Support (aiofiles만, asyncio는 내장)
+aiofiles==23.2.1
+aiohttp==3.9.5
+
+# Environment Configuration
 python-dotenv==1.0.1
-# OpenAI Integration (pinned to avoid TypedDict issues)
+
+# OpenAI Integration
 openai==1.12.0
+
 # ========================================
-# Data Processing
+# Data Processing & Analysis
 # ========================================
-# Data manipulation
+# Data Manipulation
 pandas==2.1.4
 numpy==1.24.4
-# Date and time handling
+
+# Date & Time
 python-dateutil==2.9.0
 pytz==2024.1
+
 # ========================================
 # Document Processing
 # ========================================
-# XML parsing
+# XML/HTML Processing
 lxml==5.1.0
-xml-python==0.4.3
-# JSON handling
-jsonschema==4.21.1
-# Document formats
+# xml-python 제거 (존재하지 않는 패키지)
+
+# Document Formats
 python-docx==1.1.0
 PyPDF2==3.0.1
 openpyxl==3.1.2
+
+# JSON Processing
+jsonschema==4.21.1
+
 # ========================================
 # Visualization
 # ========================================
-# Charts and graphs
 plotly==5.18.0
 altair==5.2.0
 matplotlib==3.8.2
+
 # ========================================
-# Caching and Performance
+# Performance & Caching
 # ========================================
-# Caching
 cachetools==5.3.2
+
+# ========================================
+# Utilities
+# ========================================
+# Type Hints for Python 3.8+ compatibility
+typing-extensions==4.9.0
+
+# Retry Logic
+tenacity==8.2.3
+
+# Advanced Logging
+loguru==0.7.2
+
 # ========================================
 # Streamlit Extensions
 # ========================================
-# Additional Streamlit components
 streamlit-extras==0.3.6
+
 # ========================================
-# Type Hints Compatibility
+# REMOVED PACKAGES (이유 설명)
 # ========================================
-# For Python 3.13 compatibility
-typing-extensions==4.9.0
+# asyncio - Python 내장 모듈, 설치 불필요
+# xml-python - 존재하지 않는 패키지
+# pytest, pytest-asyncio, pytest-cov - 개발용, 배포 불필요
+# black, flake8, pylint, mypy - 코드 품질 도구, 배포 불필요
+# bandit - 보안 스캔 도구, 배포 불필요
+# konlpy, JPype1 - 한국어 NLP, Java 필요, 주석 처리
+
 # ========================================
-# Natural Language Processing (Optional)
+# OPTIONAL PACKAGES (필요시 주석 해제)
 # ========================================
-# Korean NLP support (requires Java)
-# Uncomment if needed:
-# konlpy==0.6.0
-# JPype1==1.5.0
-# ========================================
-# Async Support
-# ========================================
-# Asynchronous operations
-# asyncio is built-in, remove from requirements
-aiofiles==23.2.1
-# ========================================
-# Logging and Monitoring
-# ========================================
-# Advanced logging
-loguru==0.7.2
-# ========================================
-# Testing (Development only)
-# ========================================
-# Testing framework
-pytest==7.4.4
-pytest-asyncio==0.21.1
-pytest-cov==4.1.0
-# ========================================
-# Code Quality (Development only)
-# ========================================
-# Linting and formatting
-black==23.12.1
-flake8==7.0.0
-pylint==3.0.3
-# Type checking
-mypy==1.8.0
-# ========================================
-# Security
-# ========================================
-# Security scanning
-bandit==1.7.6
-# ========================================
-# Database (Future enhancement)
-# ========================================
-# Database support (uncomment if needed)
+# Database Support
 # sqlalchemy==2.0.25
 # alembic==1.13.1
 # redis==5.0.1
+
+# Korean NLP (Java Runtime Required)
+# konlpy==0.6.0
+# JPype1==1.5.0
+
 # ========================================
-# Additional Dependencies for API Compatibility
+# INSTALLATION NOTES
 # ========================================
-# HTTP client improvements
-httpx==0.25.2
-# Retry logic
-tenacity==8.2.3
+# 1. Streamlit Cloud는 자동으로 이 파일을 읽어 패키지 설치
+# 2. Python 버전은 runtime.txt 파일로 지정 (3.11 권장)
+# 3. 시스템 패키지는 packages.txt 파일로 지정
+# 4. API 키는 Streamlit Cloud Secrets에서 설정
+
 # ========================================
-# NOTES
+# VERSION COMPATIBILITY
 # ========================================
-# 1. CRITICAL: Python version requirement: >=3.8,<3.13
-#    Python 3.13 causes TypedDict compatibility issues
-# 2. For Streamlit Cloud deployment:
-#    - Use Python 3.11 or 3.12
-#    - Keep only production dependencies
-# 3. konlpy requires Java runtime installation
-# 4. Remove testing and development dependencies for production
-# 5. If TypedDict errors persist, downgrade to Python 3.11
+# Python 3.8.x - 3.12.x : ✅ 지원
+# Python 3.13.x : ❌ TypedDict 호환성 문제
+# Python 3.7.x 이하 : ❌ 미지원
+
 # ========================================
-# INSTALLATION INSTRUCTIONS
+# TROUBLESHOOTING
 # ========================================
-# 1. Check Python version: python --version
-# 2. If Python >= 3.13, install Python 3.11 or 3.12
-# 3. Create virtual environment: python -m venv venv
-# 4. Activate: source venv/bin/activate (Linux/Mac) or venv\Scripts\activate (Windows)
-# 5. Install: pip install -r requirements.txt
-# ========================================
+# Error: No module named 'asyncio'
+# → asyncio는 내장 모듈, requirements.txt에서 제거
+#
+# Error: Could not find xml-python
+# → lxml 사용, xml-python 제거
+#
+# Error: TypedDict 'closed' parameter
+# → Python 3.13 문제, 3.11 사용 권장
+#
+# Error: Memory limit exceeded
+# → 불필요한 패키지 제거로 메모리 사용량 감소
