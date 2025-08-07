@@ -184,7 +184,7 @@ class LawAPIClient:
         
         logger.info(f"LawAPIClient 초기화 완료 - 캐시 TTL: {cache_ttl}초, 재시도: {self.retry_count}회")
     
-    def search(self, target: str = None, **params) -> Dict[str, Any]:
+   def search(self, target: str = None, **params) -> Dict[str, Any]:
         """
         검색 API 호출 (개선된 버전)
         
@@ -211,9 +211,8 @@ class LawAPIClient:
         filtered_params['OC'] = self.oc_key
         filtered_params['target'] = target
         
-        # type 파라미터가 없으면 JSON 기본값 설정
-        if 'type' not in filtered_params:
-            filtered_params['type'] = 'json'
+        # type 파라미터를 XML로 강제 설정 (중요한 변경!)
+        filtered_params['type'] = 'XML'  # JSON 대신 XML 사용
         
         # query가 없으면 기본값 설정 (일부 API는 query가 필수)
         if 'query' not in filtered_params and target in ['law', 'prec', 'detc', 'expc', 'decc', 
@@ -248,40 +247,17 @@ class LawAPIClient:
                 
                 response.raise_for_status()
                 
-                # Content-Type 확인
-                content_type = response.headers.get('Content-Type', '')
+                # XML 응답 파싱 (수정된 부분)
+                result = self._parse_xml_response(response.text, target)
                 
-                # JSON 응답 처리
-                if 'json' in content_type.lower() or filtered_params['type'].lower() == 'json':
-                    try:
-                        result = response.json()
-                        
-                        # 캐시 저장
-                        self.cache.set(cache_key, result)
-                        
-                        # 성공 로그
-                        if 'totalCnt' in result:
-                            logger.info(f"검색 성공 - target: {target}, 결과: {result.get('totalCnt', 0)}건")
-                        
-                        return result
-                        
-                    except json.JSONDecodeError as e:
-                        logger.error(f"JSON 파싱 실패: {str(e)}")
-                        logger.debug(f"응답 내용: {response.text[:500]}")
-                        
-                        # XML로 재시도
-                        if attempt < self.retry_count - 1:
-                            filtered_params['type'] = 'xml'
-                            continue
-                        
-                        # XML 파싱 시도
-                        return self._parse_xml_response(response.text, target)
+                # 캐시 저장
+                self.cache.set(cache_key, result)
                 
-                # XML 응답 처리
-                else:
-                    result = self._parse_xml_response(response.text, target)
-                    self.cache.set(cache_key, result)
-                    return result
+                # 성공 로그
+                if 'totalCnt' in result:
+                    logger.info(f"검색 성공 - target: {target}, 결과: {result.get('totalCnt', 0)}건")
+                
+                return result
                     
             except requests.exceptions.Timeout:
                 logger.warning(f"타임아웃 발생 (시도 {attempt + 1}/{self.retry_count})")
