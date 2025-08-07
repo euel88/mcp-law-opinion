@@ -97,20 +97,15 @@ class LawAPIClient:
         params['OC'] = self.oc_key
         params['target'] = target
         
-        if 'type' not in params:
-            params['type'] = 'json'
+        # type 파라미터를 XML로 강제 설정 (중요한 변경!)
+        params['type'] = 'XML'  # JSON 대신 XML 사용
         
         try:
             response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
             
-            if params['type'].lower() == 'json':
-                try:
-                    return response.json()
-                except json.JSONDecodeError:
-                    return {"error": "JSON parsing failed"}
-            else:
-                return response.text
+            # XML 응답 파싱 (수정된 부분)
+            return self._parse_xml_response(response.text, target)
                 
         except requests.exceptions.RequestException as e:
             logger.error(f"상세 조회 실패: {str(e)}")
