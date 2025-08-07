@@ -1,15 +1,36 @@
-# Core dependencies
+# ========================================
+# Core Dependencies
+# ========================================
+
+# Streamlit - Main framework
 streamlit==1.40.0
+
+# API and Network
 requests==2.32.3
+aiohttp==3.11.10
+urllib3==2.5.0
+
+# Environment and Configuration
 python-dotenv==1.0.1
+
+# OpenAI Integration
 openai==1.56.2
 
-# Data processing
+# ========================================
+# Data Processing
+# ========================================
+
+# Data manipulation
 pandas==2.2.3
 numpy==1.26.4
 
-# Date and time
+# Date and time handling
 python-dateutil==2.9.0
+pytz==2025.2
+
+# ========================================
+# Document Processing
+# ========================================
 
 # XML parsing
 lxml==5.3.0
@@ -17,32 +38,99 @@ lxml==5.3.0
 # JSON handling
 jsonschema==4.23.0
 
-# Caching
-cachetools==5.5.0
-
-# Session management
-streamlit-extras==0.4.7
-
-# Charts and visualization
-plotly==5.24.1
-altair==5.4.1
-
-# Document processing
+# Document formats
 python-docx==1.1.2
 PyPDF2==3.0.1
 openpyxl==3.1.5
 
-# Natural Language Processing (Korean)
-konlpy==0.6.0
-# Note: konlpy requires Java runtime
+# ========================================
+# Visualization
+# ========================================
 
-# Async support
-aiohttp==3.11.10
+# Charts and graphs
+plotly==5.24.1
+altair==5.4.1
+matplotlib==3.10.5
+
+# ========================================
+# Caching and Performance
+# ========================================
+
+# Caching
+cachetools==5.5.0
+
+# ========================================
+# Streamlit Extensions
+# ========================================
+
+# Additional Streamlit components
+streamlit-extras==0.4.7
+
+# ========================================
+# Natural Language Processing (Optional)
+# ========================================
+
+# Korean NLP support (requires Java)
+# Uncomment if needed:
+# konlpy==0.6.0
+# JPype1==1.6.0
+
+# ========================================
+# Async Support
+# ========================================
+
+# Asynchronous operations
 asyncio==3.4.3
+aiofiles==24.1.0
 
-# Logging
+# ========================================
+# Logging and Monitoring
+# ========================================
+
+# Advanced logging
 loguru==0.7.2
 
-# Testing (optional)
+# ========================================
+# Testing (Development only)
+# ========================================
+
+# Testing framework
 pytest==8.3.4
 pytest-asyncio==0.25.0
+pytest-cov==5.0.0
+
+# ========================================
+# Code Quality (Development only)
+# ========================================
+
+# Linting and formatting
+black==24.4.2
+flake8==7.0.0
+pylint==3.1.0
+
+# Type checking
+mypy==1.9.0
+
+# ========================================
+# Security
+# ========================================
+
+# Security scanning
+bandit==1.7.8
+
+# ========================================
+# Database (Future enhancement)
+# ========================================
+
+# Database support (uncomment if needed)
+# sqlalchemy==2.0.29
+# alembic==1.13.1
+# redis==5.0.3
+
+# ========================================
+# NOTES
+# ========================================
+# 1. Python version requirement: >=3.8,<3.13
+# 2. For Streamlit Cloud deployment, keep only production dependencies
+# 3. konlpy requires Java runtime installation
+# 4. Remove testing and development dependencies for production
