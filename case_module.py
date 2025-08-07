@@ -115,58 +115,88 @@ class CaseSearcher:
         popup: bool = False
     ) -> Dict[str, Any]:
         """
-        법원 판례 검색 (완전판)
-        
-        Args:
-            query: 검색어 (검색 결과 리스트)
-            court: 법원 종류 ('대법원', '하위법원')
-            court_name: 법원명 (대법원, 서울고등법원, 광주지법, 인천지방법원 등)
-            date: 특정 선고일자 (YYYYMMDD)
-            date_range: 선고일자 범위 튜플 (시작일, 종료일) YYYYMMDD 형식
-            search_type: 1=판례명 검색, 2=본문 검색
-            display: 결과 개수 (기본 20, 최대 100)
-            page: 페이지 번호 (기본 1)
-            sort: 정렬 옵션 (기본 date_desc)
-            case_number: 사건번호 (예: "2009느합133,2010느합21")
-            reference_law: 참조법령명 (형법, 민법 등)
-            data_source: 데이터 출처 ('tax', 'labor', 'supreme')
-            gana: 사전식 검색 (ga, na, da 등)
-            popup: 상세화면 팝업창 여부
-            
-        Returns:
-            검색 결과 딕셔너리
+        법원 판례 검색 (수정된 버전)
         """
         try:
-            # API 호출 (수정된 방식)
-            result = self.api_client.search(
-                target='prec',  # target을 첫 번째 인자로
-                query=query if query else '*',  # query가 없으면 '*'
-                search=search_type,
-                display=min(display, 100),
-                page=page,
-                sort=self.SORT_OPTIONS.get(sort, 'ddes'),
-                type='json',  # JSON 타입 명시
-                org=self.COURT_CODES.get(court) if court and court in self.COURT_CODES else None,
-                curt=court_name if court_name else None,
-                date=self._format_date_for_api(date) if date else None,
-                prncYd=f"{self._format_date_for_api(date_range[0])}~{self._format_date_for_api(date_range[1])}" if date_range and len(date_range) == 2 else None,
-                nb=case_number if case_number else None,
-                JO=reference_law if reference_law else None,
-                datSrcNm=self.DATA_SOURCES.get(data_source) if data_source and data_source in self.DATA_SOURCES else None,
-                gana=gana if gana else None,
-                popYn='Y' if popup else None
-            )
+            # 기본 파라미터 설정
+            params = {
+                'search': search_type,
+                'display': min(display, 100),
+                'page': page,
+                'sort': self.SORT_OPTIONS.get(sort, 'ddes'),
+                'type': 'json'
+            }
             
-            # None 값 제거 (API에 불필요한 파라미터 전송 방지)
+            # 선택적 파라미터 추가 (None이 아닌 경우만)
+            if court and court in self.COURT_CODES:
+                params['org'] = self.COURT_CODES[court]
+            if court_name:
+                params['curt'] = court_name
+            if date:
+                params['date'] = self._format_date_for_api(date)
+            if date_range and len(date_range) == 2:
+                params['prncYd'] = f"{self._format_date_for_api(date_range[0])}~{self._format_date_for_api(date_range[1])}"
+            if case_number:
+                params['nb'] = case_number
+            if reference_law:
+                params['JO'] = reference_law
+            if data_source and data_source in self.DATA_SOURCES:
+                params['datSrcNm'] = self.DATA_SOURCES[data_source]
+            if gana:
+                params['gana'] = gana
+            if popup:
+                params['popYn'] = 'Y'
+            
+            # API 호출 (한 번만!)
             result = self.api_client.search(
                 target='prec',
                 query=query if query else '*',
-                search=search_type,
-                display=min(display, 100),
-                page=page,
-                sort=self.SORT_OPTIONS.get(sort, 'ddes'),
-                type='json'
+                **params
             )
+            
+            # 디버깅용 로그
+            logger.debug(f"판례 검색 요청 - query: {query}, params: {params}")
+            logger.debug(f"판례 검색 응답 - keys: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
+            
+            # 에러 체크
+            if isinstance(result, dict) and 'error' in result:
+                logger.error(f"판례 검색 API 오류: {result['error']}")
+                return {
+                    'status': 'error',
+                    'message': result['error'],
+                    'total_count': 0,
+                    'cases': []
+                }
+            
+            # 정상 결과 처리
+            if isinstance(result, dict):
+                # prec 키 또는 results 키에서 판례 추출
+                cases = result.get('prec', result.get('results', []))
+                
+                return {
+                    'status': 'success',
+                    'total_count': result.get('totalCnt', 0),
+                    'page': page,
+                    'cases': self._normalize_court_cases(cases) if isinstance(cases, list) else [],
+                    'query': query,
+                    'search_params': params
+                }
+            
+            return {
+                'status': 'error',
+                'message': 'Invalid response format',
+                'total_count': 0,
+                'cases': []
+            }
+            
+        except Exception as e:
+            logger.error(f"법원 판례 검색 중 오류: {str(e)}")
+            return {
+                'status': 'error',
+                'message': str(e),
+                'total_count': 0,
+                'cases': []
+            }
             
             # 추가 파라미터 처리
             params = {}
