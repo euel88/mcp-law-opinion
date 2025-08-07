@@ -5,12 +5,12 @@ case_module.py - 판례/심판례 검색 모듈 (Python 3.13 호환 수정판)
 지원하는 판례 유형: 판례(대법원/하급심), 헌재결정례, 법령해석례, 행정심판례
 
 개발 가이드의 모든 API 파라미터와 기능을 완벽하게 구현한 버전입니다.
+Python 3.13 호환성 문제 해결 - Enum 제거, TypedDict 제거
 """
 
 from typing import Dict, List, Optional, Any, Union, Tuple
 from datetime import datetime
 import logging
-from enum import Enum
 from common_api import LawAPIClient, OpenAIHelper
 
 # 로깅 설정
@@ -18,15 +18,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# Enum 클래스를 단순한 딕셔너리로 대체 (Python 3.13 호환성)
+# Python 3.13 호환성을 위해 Enum 대신 딕셔너리 상수 사용
 class CourtType:
-    """법원 종류"""
+    """법원 종류 상수 클래스"""
     SUPREME = {'code': '400201', 'label': '대법원'}
     LOWER = {'code': '400202', 'label': '하위법원'}
 
 
 class DecisionType:
-    """재결 구분 (행정심판)"""
+    """재결 구분 상수 클래스 (행정심판)"""
     DISMISSAL = {'code': '440201', 'label': '기각'}
     REJECTION = {'code': '440202', 'label': '각하'}
     ACCEPTANCE = {'code': '440203', 'label': '인용'}
@@ -197,79 +197,6 @@ class CaseSearcher:
                 'total_count': 0,
                 'cases': []
             }
-            
-            # 추가 파라미터 처리
-            params = {}
-            if court and court in self.COURT_CODES:
-                params['org'] = self.COURT_CODES[court]
-            if court_name:
-                params['curt'] = court_name
-            if date:
-                params['date'] = self._format_date_for_api(date)
-            if date_range and len(date_range) == 2:
-                params['prncYd'] = f"{self._format_date_for_api(date_range[0])}~{self._format_date_for_api(date_range[1])}"
-            if case_number:
-                params['nb'] = case_number
-            if reference_law:
-                params['JO'] = reference_law
-            if data_source and data_source in self.DATA_SOURCES:
-                params['datSrcNm'] = self.DATA_SOURCES[data_source]
-            if gana:
-                params['gana'] = gana
-            if popup:
-                params['popYn'] = 'Y'
-            
-            # API 재호출 with 추가 파라미터
-            if params:
-                result = self.api_client.search(
-                    target='prec',
-                    query=query if query else '*',
-                    search=search_type,
-                    display=min(display, 100),
-                    page=page,
-                    sort=self.SORT_OPTIONS.get(sort, 'ddes'),
-                    type='json',
-                    **params
-                )
-            
-            # 에러 체크
-            if isinstance(result, dict) and 'error' in result:
-                logger.error(f"판례 검색 API 오류: {result['error']}")
-                return {
-                    'status': 'error',
-                    'message': result['error'],
-                    'total_count': 0,
-                    'cases': []
-                }
-            
-            # 정상 결과 처리
-            if isinstance(result, dict):
-                cases = result.get('prec', [])  # 'prec' 키에서 판례 추출
-                
-                return {
-                    'status': 'success',
-                    'total_count': result.get('totalCnt', 0),
-                    'page': page,
-                    'cases': self._normalize_court_cases(cases),
-                    'query': query,
-                    'search_params': params
-                }
-            
-            return {
-                'status': 'error',
-                'message': 'Invalid response format',
-                'total_count': 0,
-                'cases': []
-            }
-            
-        except Exception as e:
-            logger.error(f"법원 판례 검색 중 오류: {str(e)}")
-            return {
-                'status': 'error',
-                'message': str(e),
-                'total_count': 0,
-                'cases': []
-            }
     
     def get_court_case_detail(
         self, 
@@ -399,13 +326,13 @@ class CaseSearcher:
             
             # 정상 결과 처리
             if isinstance(result, dict):
-                decisions = result.get('detc', [])  # 'detc' 키에서 결정례 추출
+                decisions = result.get('detc', result.get('results', []))  # 'detc' 키에서 결정례 추출
                 
                 return {
                     'status': 'success',
                     'total_count': result.get('totalCnt', 0),
                     'page': page,
-                    'decisions': self._normalize_constitutional_decisions(decisions),
+                    'decisions': self._normalize_constitutional_decisions(decisions) if isinstance(decisions, list) else [],
                     'query': query,
                     'search_params': params
                 }
@@ -555,13 +482,13 @@ class CaseSearcher:
             
             # 정상 결과 처리
             if isinstance(result, dict):
-                interpretations = result.get('expc', [])  # 'expc' 키에서 해석례 추출
+                interpretations = result.get('expc', result.get('results', []))  # 'expc' 키에서 해석례 추출
                 
                 return {
                     'status': 'success',
                     'total_count': result.get('totalCnt', 0),
                     'page': page,
-                    'interpretations': self._normalize_legal_interpretations(interpretations),
+                    'interpretations': self._normalize_legal_interpretations(interpretations) if isinstance(interpretations, list) else [],
                     'query': query,
                     'search_params': params
                 }
@@ -707,13 +634,13 @@ class CaseSearcher:
             
             # 정상 결과 처리
             if isinstance(result, dict):
-                tribunals = result.get('decc', [])  # 'decc' 키에서 심판례 추출
+                tribunals = result.get('decc', result.get('results', []))  # 'decc' 키에서 심판례 추출
                 
                 return {
                     'status': 'success',
                     'total_count': result.get('totalCnt', 0),
                     'page': page,
-                    'tribunals': self._normalize_admin_tribunals(tribunals),
+                    'tribunals': self._normalize_admin_tribunals(tribunals) if isinstance(tribunals, list) else [],
                     'query': query,
                     'search_params': params
                 }
