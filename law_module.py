@@ -111,7 +111,98 @@ class LawAPIClient:
             logger.error(f"상세 조회 실패: {str(e)}")
             return {"error": str(e)}
 
-
+    def _parse_xml_response(self, xml_text: str, target: str) -> Dict:
+        """
+        XML 응답을 파싱하여 JSON 형태로 변환
+        
+        Args:
+            xml_text: XML 응답 텍스트
+            target: API 타겟
+        
+        Returns:
+            파싱된 결과
+        """
+        try:
+            # BOM 제거
+            if xml_text.startswith('\ufeff'):
+                xml_text = xml_text[1:]
+            
+            # XML 헤더가 없으면 추가
+            if not xml_text.strip().startswith('<?xml'):
+                xml_text = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_text
+            
+            # 특수문자 제거
+            import re
+            xml_text = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', xml_text)
+            
+            # XML 파싱
+            root = ET.fromstring(xml_text.encode('utf-8'))
+            
+            # 에러 체크
+            error_msg = root.findtext('.//errorMsg')
+            if error_msg:
+                return {'error': error_msg, 'totalCnt': 0, 'results': []}
+            
+            # 기본 정보 추출
+            result = {
+                'totalCnt': int(root.findtext('.//totalCnt', '0')),
+                'page': int(root.findtext('.//page', '1')),
+                'results': []
+            }
+            
+            # 타겟별 결과 태그 매핑
+            result_tags = {
+                'law': 'law',
+                'prec': 'prec',
+                'detc': 'detc',
+                'expc': 'expc',
+                'decc': 'decc',
+                'admrul': 'admrul',
+                'ordin': 'ordin',
+                'trty': 'trty',
+                'eflaw': 'eflaw',
+                'elaw': 'elaw'
+            }
+            
+            # 결과 태그 결정
+            tag_name = result_tags.get(target, 'item')
+            
+            # 결과 추출
+            items = root.findall(f'.//{tag_name}')
+            for item in items:
+                item_dict = {}
+                for child in item:
+                    if child.text:
+                        item_dict[child.tag] = child.text.strip()
+                
+                if item_dict:
+                    result['results'].append(item_dict)
+            
+            # 타겟별 결과 키 설정 (호환성 유지)
+            if target in result_tags:
+                result[target] = result['results']
+            
+            logger.info(f"XML 파싱 완료 - target: {target}, 결과: {len(result['results'])}건")
+            
+            return result
+            
+        except ET.ParseError as e:
+            logger.error(f"XML 파싱 오류: {str(e)}")
+            logger.debug(f"파싱 실패한 XML (처음 500자): {xml_text[:500]}")
+            
+            return {
+                'error': f'XML 파싱 오류: {str(e)}',
+                'totalCnt': 0,
+                'results': []
+            }
+        except Exception as e:
+            logger.error(f"예상치 못한 오류: {str(e)}")
+            return {
+                'error': f'오류: {str(e)}',
+                'totalCnt': 0,
+                'results': []
+            }
+            
 class LawSearcher:
     """
     법제처 Open API를 활용한 법령 검색 통합 모듈
