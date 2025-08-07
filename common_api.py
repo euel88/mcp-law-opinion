@@ -307,9 +307,8 @@ class LawAPIClient:
         params['OC'] = self.oc_key
         params['target'] = target
         
-        # type 파라미터가 없으면 JSON 기본값 설정
-        if 'type' not in params:
-            params['type'] = 'json'
+        # type 파라미터를 XML로 강제 설정 (중요한 변경!)
+        params['type'] = 'XML'  # JSON 대신 XML 사용
         
         # id나 ID 파라미터 처리
         if 'id' in params:
@@ -328,33 +327,15 @@ class LawAPIClient:
             response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
             
-            # Content-Type 확인
-            content_type = response.headers.get('Content-Type', '')
+            # XML 응답 파싱 (수정된 부분)
+            result = self._parse_xml_response(response.text, target)
             
-            # JSON 응답 처리
-            if params['type'].lower() == 'json' or 'json' in content_type.lower():
-                try:
-                    result = response.json()
-                    
-                    # 캐시 저장
-                    self.cache.set(cache_key, result)
-                    
-                    logger.info(f"상세 조회 성공 - target: {target}")
-                    
-                    return result
-                    
-                except json.JSONDecodeError:
-                    logger.error("JSON 파싱 실패")
-                    return {
-                        'error': 'JSON 파싱 실패',
-                        'raw': response.text[:500]
-                    }
+            # 캐시 저장
+            self.cache.set(cache_key, result)
             
-            # XML 응답 처리
-            else:
-                result = self._parse_xml_response(response.text, target)
-                self.cache.set(cache_key, result)
-                return result
+            logger.info(f"상세 조회 성공 - target: {target}")
+            
+            return result
                 
         except requests.exceptions.RequestException as e:
             logger.error(f"상세 조회 실패: {str(e)}")
