@@ -1,7 +1,7 @@
 """
-법령 체계도 검색 및 다운로드 전문 모듈 (개선판)
-Law Hierarchy Search and Download Module - Enhanced Version
-Version 2.0 - ID 기반 정확한 연계 검색
+법령 체계도 검색 및 다운로드 전문 모듈 (완전 개선판 v3.0)
+Law Hierarchy Search and Download Module - Complete Overhaul
+Version 3.0 - 법령ID 기반 정확한 매칭 + 소관부처 전체 조회 방식
 """
 
 import os
@@ -155,32 +155,6 @@ class LawNameProcessor:
         return base_name
     
     @classmethod
-    def generate_keywords(cls, law_name: str, law_id: str = None) -> List[str]:
-        """검색 키워드 생성"""
-        keywords = []
-        base_name = cls.extract_base_name(law_name)
-        
-        # 기본 키워드
-        keywords.append(law_name)
-        keywords.append(base_name)
-        
-        # 축약형 생성
-        if '과' in base_name:
-            parts = base_name.split('과')
-            if len(parts) == 2:
-                keywords.extend([p.strip() for p in parts])
-        
-        # 공백 제거 버전
-        keywords.append(base_name.replace(' ', ''))
-        
-        # 법령 ID 추가
-        if law_id:
-            keywords.append(law_id)
-        
-        # 중복 제거하여 반환
-        return list(dict.fromkeys(keywords))
-    
-    @classmethod
     def estimate_department(cls, law_name: str) -> Optional[str]:
         """법령명으로 소관부처 추정"""
         for dept, keywords in cls.DEPARTMENT_KEYWORDS.items():
@@ -194,11 +168,11 @@ class LawNameProcessor:
         return cls.DEPARTMENT_CODES.get(department)
 
 # ===========================
-# 법령 체계도 검색 클래스 (개선판)
+# 법령 체계도 검색 클래스 (완전 개선판)
 # ===========================
 
 class LawHierarchySearcher:
-    """법령 체계도 검색 클래스 - ID 기반 정확한 연계"""
+    """법령 체계도 검색 클래스 - 완전 개선된 버전"""
     
     def __init__(self, law_client: Any, law_searcher: Any = None):
         self.law_client = law_client
@@ -206,12 +180,12 @@ class LawHierarchySearcher:
         self.name_processor = LawNameProcessor()
         
     def search_hierarchy(self, law_info: Dict, config: SearchConfig) -> LawHierarchy:
-        """법령 체계도 전체 검색 (개선된 버전)"""
+        """법령 체계도 전체 검색 (완전 개선된 버전)"""
         hierarchy = LawHierarchy(main=law_info)
         
         law_id = law_info.get('법령ID') or law_info.get('법령일련번호')
         law_name = law_info.get('법령명한글', '')
-        law_mst = law_info.get('법령MST')  # 마스터 번호
+        law_mst = law_info.get('법령MST')
         
         if not law_id or not law_name:
             logger.warning("법령 ID 또는 명칭이 없습니다.")
@@ -231,114 +205,75 @@ class LawHierarchySearcher:
         
         logger.info(f"소관부처: {department or '미확인'} (코드: {dept_code or '없음'})")
         
-        # 2. 법령 체계도 API를 통한 직접 연계 조회 (최우선)
+        # 2. 법령 체계도 API를 통한 직접 연계 조회
         if config.search_depth in ["확장", "최대"]:
             hierarchy_links = self._get_law_hierarchy_links(law_id, law_mst)
             self._process_hierarchy_links(hierarchy_links, hierarchy)
         
-        # 3. 위임 법령 조회
+        # 3. 위임 법령 조회 (lsDelegated API 사용)
         if config.include_delegated:
-            hierarchy.delegated = self._search_delegated_laws_enhanced(law_id, law_mst)
+            hierarchy.delegated = self._search_delegated_laws(law_id, law_mst)
         
-        # 4. 시행령/시행규칙 검색 (법령ID 기반)
+        # 4. 시행령/시행규칙 검색 (개선된 방법)
         if config.include_decree:
-            hierarchy.decree = self._search_decree_by_id(law_id, law_name, law_mst)
+            hierarchy.decree = self._search_related_laws(law_id, law_name, '시행령')
         
         if config.include_rule:
-            hierarchy.rule = self._search_rule_by_id(law_id, law_name, law_mst)
+            hierarchy.rule = self._search_related_laws(law_id, law_name, '시행규칙')
         
-        # 5. 행정규칙 검색 (법령ID 및 소관부처 기반)
+        # 5. 행정규칙 검색 (완전히 새로운 접근)
         if config.include_admin_rules:
-            hierarchy.admin_rules = self._search_admin_rules_enhanced(
-                law_id, law_name, dept_code, law_detail
+            hierarchy.admin_rules = self._search_all_admin_rules(
+                law_id, law_name, dept_code, law_detail, config
             )
         
-        # 6. 별표서식 검색 (법령ID 직접 검색)
+        # 6. 별표서식 검색 (법령ID 직접 연계)
         if config.include_attachments:
-            hierarchy.attachments = self._search_attachments_by_id(law_id, law_name)
+            hierarchy.attachments = self._search_law_attachments(law_id, law_name)
         
         # 7. 행정규칙 별표서식
         if config.include_admin_attachments:
-            hierarchy.admin_attachments = self._search_admin_attachments_enhanced(
-                hierarchy.admin_rules
-            )
+            hierarchy.admin_attachments = self._search_admin_attachments(hierarchy.admin_rules)
         
-        # 8. 자치법규 검색 (법령ID 및 관련 행정규칙 기반)
+        # 8. 자치법규 검색 (개선된 방법)
         if config.include_local:
-            hierarchy.local_laws = self._search_local_laws_enhanced(
+            hierarchy.local_laws = self._search_local_laws(
                 law_id, law_name, hierarchy.admin_rules, dept_code
             )
-        
-        # 9. 법령 본문에서 참조 행정규칙 추출 (최대 검색 시)
-        if config.search_depth == "최대" and config.include_admin_rules:
-            referenced_rules = self._extract_referenced_admin_rules(law_detail)
-            self._add_referenced_admin_rules(referenced_rules, hierarchy.admin_rules, dept_code)
         
         logger.info(f"법령 체계도 검색 완료: 총 {len(hierarchy.get_all_laws())}건")
         
         return hierarchy
     
     def _get_law_detail(self, law_id: str, law_mst: Optional[str] = None) -> Dict:
-        """법령 상세 정보 조회 (개선)"""
+        """법령 상세 정보 조회"""
         try:
-            params = {}
+            params = {'ID': law_id}
             if law_mst:
                 params['MST'] = law_mst
-            else:
-                params['ID'] = law_id
             
             result = self.law_client.get_detail(target='law', **params)
             
             if result and 'error' not in result:
-                # XML 응답 파싱
-                if isinstance(result, str):
-                    return self._parse_law_detail_xml(result)
+                # results 배열에서 첫 번째 항목 추출
+                if 'results' in result and result['results']:
+                    return result['results'][0]
                 return result
         except Exception as e:
             logger.error(f"법령 상세 조회 실패: {e}")
         
         return {}
     
-    def _parse_law_detail_xml(self, xml_text: str) -> Dict:
-        """법령 상세 XML 파싱"""
-        try:
-            root = ET.fromstring(xml_text.encode('utf-8'))
-            detail = {}
-            
-            # 주요 정보 추출
-            fields = [
-                '법령ID', '법령명한글', '소관부처명', '소관부처코드',
-                '공포일자', '시행일자', '제개정구분명', '법령종류'
-            ]
-            
-            for field in fields:
-                elem = root.find(f'.//{field}')
-                if elem is not None and elem.text:
-                    detail[field] = elem.text
-            
-            # 조문 내용 추출 (참조 행정규칙 찾기용)
-            articles = root.findall('.//조문')
-            if articles:
-                detail['조문내용'] = []
-                for article in articles:
-                    content = article.findtext('.//조문내용', '')
-                    if content:
-                        detail['조문내용'].append(content)
-            
-            return detail
-        except Exception as e:
-            logger.error(f"XML 파싱 오류: {e}")
-            return {}
-    
     def _get_law_hierarchy_links(self, law_id: str, law_mst: Optional[str] = None) -> Dict:
         """법령 체계도 API를 통한 연계 정보 조회"""
         try:
-            params = {'display': 1000}  # 최대한 많이 가져오기
-            
+            # lsStmd API 사용
+            params = {
+                'ID': law_id,
+                'display': 1000
+            }
             if law_mst:
                 params['MST'] = law_mst
-            else:
-                params['ID'] = law_id
             
             result = self.law_client.search(target='lsStmd', **params)
             
@@ -374,49 +309,13 @@ class LawHierarchySearcher:
                     '법령구분': '시행규칙'
                 })
                 seen_ids.add(item.get('시행규칙ID'))
-            
-            # 행정규칙 (체계도에 포함된 경우)
-            if item.get('행정규칙ID'):
-                self._add_admin_rule_from_hierarchy(item, hierarchy.admin_rules, seen_ids)
     
-    def _add_admin_rule_from_hierarchy(self, item: Dict, admin_rules: AdminRules, seen_ids: Set):
-        """체계도에서 행정규칙 추가"""
-        rule_id = item.get('행정규칙ID')
-        if rule_id in seen_ids:
-            return
-        
-        rule_name = item.get('행정규칙명', '')
-        rule_dict = {
-            '행정규칙ID': rule_id,
-            '행정규칙명': rule_name,
-            '발령일자': item.get('발령일자'),
-            '소관부처명': item.get('소관부처명')
-        }
-        
-        seen_ids.add(rule_id)
-        
-        # 분류
-        if '훈령' in rule_name:
-            admin_rules.directive.append(rule_dict)
-        elif '예규' in rule_name:
-            admin_rules.regulation.append(rule_dict)
-        elif '고시' in rule_name:
-            admin_rules.notice.append(rule_dict)
-        elif '지침' in rule_name:
-            admin_rules.guideline.append(rule_dict)
-        elif '규정' in rule_name:
-            admin_rules.rule.append(rule_dict)
-        else:
-            admin_rules.etc.append(rule_dict)
-    
-    def _search_delegated_laws_enhanced(self, law_id: str, law_mst: Optional[str] = None) -> List[Dict]:
-        """위임 법령 검색 (개선)"""
+    def _search_delegated_laws(self, law_id: str, law_mst: Optional[str] = None) -> List[Dict]:
+        """위임 법령 검색"""
         try:
-            params = {}
+            params = {'ID': law_id}
             if law_mst:
                 params['MST'] = law_mst
-            else:
-                params['ID'] = law_id
             
             result = self.law_client.search(target='lsDelegated', **params)
             
@@ -427,134 +326,178 @@ class LawHierarchySearcher:
         
         return []
     
-    def _search_decree_by_id(self, law_id: str, law_name: str, law_mst: Optional[str] = None) -> List[Dict]:
-        """시행령 검색 (법령ID 기반)"""
-        decrees = []
+    def _search_related_laws(self, law_id: str, law_name: str, law_type: str) -> List[Dict]:
+        """관련 법령 검색 (시행령, 시행규칙)"""
+        results = []
         seen_ids = set()
         
         if not self.law_searcher:
-            return decrees
+            return results
         
         try:
-            # 1. 법령명 + "시행령"으로 검색
+            # 1. 법령명 기반 검색
             base_name = self.name_processor.extract_base_name(law_name)
-            search_queries = [
-                f"{base_name} 시행령",
-                f"{base_name}시행령",
-                f"{law_name} 시행령"
+            queries = [
+                f"{base_name} {law_type}",
+                f"{base_name}{law_type}",
+                law_type  # 전체 시행령/시행규칙 검색 후 필터링
             ]
             
-            for query in search_queries:
-                result = self.law_searcher.search_laws(
-                    query=query,
-                    display=50
-                )
+            for query in queries:
+                result = self.law_searcher.search_laws(query=query, display=100)
                 
                 if result.get('totalCnt', 0) > 0:
-                    for decree in result.get('results', []):
-                        decree_id = decree.get('법령ID')
-                        decree_name = decree.get('법령명한글', '')
+                    for law in result.get('results', []):
+                        related_id = law.get('법령ID')
+                        related_name = law.get('법령명한글', '')
                         
-                        # 시행령인지 확인
-                        if decree_id not in seen_ids and '시행령' in decree_name:
-                            # 법령명 유사도 체크
-                            if self._is_related_law(base_name, decree_name):
-                                decrees.append(decree)
-                                seen_ids.add(decree_id)
-            
-            # 2. 법령ID로 직접 참조 검색
-            if law_id:
-                result = self.law_searcher.search_laws(
-                    query=law_id,
-                    display=20
-                )
+                        if related_id not in seen_ids and law_type in related_name:
+                            # 관련성 체크
+                            if self._is_related_law(base_name, related_name):
+                                results.append(law)
+                                seen_ids.add(related_id)
                 
-                for decree in result.get('results', []):
-                    decree_id = decree.get('법령ID')
-                    decree_name = decree.get('법령명한글', '')
-                    
-                    if decree_id not in seen_ids and '시행령' in decree_name:
-                        decrees.append(decree)
-                        seen_ids.add(decree_id)
+                if len(results) >= 5:  # 충분히 찾았으면 중단
+                    break
             
         except Exception as e:
-            logger.error(f"시행령 검색 오류: {e}")
+            logger.error(f"{law_type} 검색 오류: {e}")
         
-        return decrees
+        return results
     
-    def _search_rule_by_id(self, law_id: str, law_name: str, law_mst: Optional[str] = None) -> List[Dict]:
-        """시행규칙 검색 (법령ID 기반)"""
-        rules = []
-        seen_ids = set()
-        
-        if not self.law_searcher:
-            return rules
-        
-        try:
-            # 1. 법령명 + "시행규칙"으로 검색
-            base_name = self.name_processor.extract_base_name(law_name)
-            search_queries = [
-                f"{base_name} 시행규칙",
-                f"{base_name}시행규칙",
-                f"{law_name} 시행규칙"
-            ]
-            
-            for query in search_queries:
-                result = self.law_searcher.search_laws(
-                    query=query,
-                    display=50
-                )
-                
-                if result.get('totalCnt', 0) > 0:
-                    for rule in result.get('results', []):
-                        rule_id = rule.get('법령ID')
-                        rule_name = rule.get('법령명한글', '')
-                        
-                        if rule_id not in seen_ids and '시행규칙' in rule_name:
-                            if self._is_related_law(base_name, rule_name):
-                                rules.append(rule)
-                                seen_ids.add(rule_id)
-            
-        except Exception as e:
-            logger.error(f"시행규칙 검색 오류: {e}")
-        
-        return rules
-    
-    def _search_admin_rules_enhanced(self, law_id: str, law_name: str, 
-                                    dept_code: Optional[str], law_detail: Dict) -> AdminRules:
-        """행정규칙 검색 (개선된 버전)"""
+    def _search_all_admin_rules(self, law_id: str, law_name: str, 
+                                dept_code: Optional[str], law_detail: Dict, 
+                                config: SearchConfig) -> AdminRules:
+        """행정규칙 전체 검색 (완전히 새로운 접근)"""
         admin_rules = AdminRules()
         seen_ids = set()
         
-        # 1. 법령ID로 직접 검색
-        self._search_admin_rules_by_law_id_direct(law_id, admin_rules, seen_ids)
+        # 전략 1: 소관부처의 모든 행정규칙 가져오기
+        if dept_code and config.search_depth in ["확장", "최대"]:
+            logger.info(f"소관부처({dept_code}) 전체 행정규칙 조회 중...")
+            all_dept_rules = self._get_all_department_admin_rules(dept_code)
+            
+            # 법령과의 관련성 판단
+            for rule in all_dept_rules:
+                if self._is_admin_rule_related(law_id, law_name, rule, law_detail):
+                    rule_id = rule.get('행정규칙ID')
+                    if rule_id and rule_id not in seen_ids:
+                        self._categorize_admin_rule(rule, admin_rules, seen_ids)
         
-        # 2. 소관부처 전체 행정규칙 조회 후 필터링
-        if dept_code:
-            self._search_admin_rules_by_department_all(
-                law_id, law_name, dept_code, admin_rules, seen_ids
-            )
+        # 전략 2: 법령ID로 직접 검색
+        self._search_admin_rules_by_law_id(law_id, admin_rules, seen_ids)
         
-        # 3. 법령 본문에서 언급된 행정규칙 검색
-        if law_detail and '조문내용' in law_detail:
-            self._search_referenced_admin_rules(
-                law_detail['조문내용'], admin_rules, seen_ids, dept_code
-            )
+        # 전략 3: 법령명 키워드로 검색
+        if config.search_depth in ["확장", "최대"]:
+            self._search_admin_rules_by_keywords(law_name, admin_rules, seen_ids, dept_code)
         
-        # 4. 법령명 기반 검색 (보조)
-        base_name = self.name_processor.extract_base_name(law_name)
-        self._search_admin_rules_by_name(base_name, admin_rules, seen_ids, dept_code)
+        # 전략 4: 법령 본문에서 참조된 행정규칙 추출 (최대 깊이)
+        if config.search_depth == "최대" and law_detail:
+            self._extract_and_search_referenced_rules(law_detail, admin_rules, seen_ids, dept_code)
+        
+        logger.info(f"행정규칙 검색 완료: {admin_rules.total_count()}건")
         
         return admin_rules
     
-    def _search_admin_rules_by_law_id_direct(self, law_id: str, admin_rules: AdminRules, seen_ids: Set):
+    def _get_all_department_admin_rules(self, dept_code: str) -> List[Dict]:
+        """소관부처의 모든 행정규칙 조회"""
+        all_rules = []
+        
+        try:
+            # 페이지별로 모든 행정규칙 가져오기
+            page = 1
+            while True:
+                result = self.law_client.search(
+                    target='admrul',
+                    query='*',  # 전체 검색
+                    org=dept_code,
+                    display=100,
+                    page=page
+                )
+                
+                if result and result.get('totalCnt', 0) > 0:
+                    rules = result.get('results', [])
+                    all_rules.extend(rules)
+                    
+                    # 더 이상 결과가 없으면 중단
+                    if len(rules) < 100 or page >= 10:  # 최대 1000개까지
+                        break
+                    
+                    page += 1
+                else:
+                    break
+                    
+        except Exception as e:
+            logger.error(f"부처 행정규칙 전체 조회 오류: {e}")
+        
+        logger.info(f"소관부처 행정규칙 총 {len(all_rules)}건 조회")
+        return all_rules
+    
+    def _is_admin_rule_related(self, law_id: str, law_name: str, 
+                              admin_rule: Dict, law_detail: Dict) -> bool:
+        """행정규칙이 법령과 관련있는지 판단 (개선된 버전)"""
+        rule_name = admin_rule.get('행정규칙명', '')
+        rule_content = admin_rule.get('행정규칙내용', '')
+        
+        # 1. 법령ID가 행정규칙명이나 내용에 포함되어 있는가?
+        if law_id in rule_name or law_id in rule_content:
+            return True
+        
+        # 2. 법령명이 행정규칙명에 포함되어 있는가?
+        base_name = self.name_processor.extract_base_name(law_name)
+        if base_name in rule_name:
+            return True
+        
+        # 3. 주요 키워드 매칭
+        law_keywords = self._extract_keywords(law_name)
+        rule_keywords = self._extract_keywords(rule_name)
+        
+        # 공통 키워드가 2개 이상이면 관련
+        common_keywords = law_keywords & rule_keywords
+        if len(common_keywords) >= 2:
+            return True
+        
+        # 4. 법령 본문에 행정규칙이 언급되어 있는가?
+        if law_detail and '조문내용' in law_detail:
+            articles = law_detail.get('조문내용', [])
+            if isinstance(articles, str):
+                articles = [articles]
+            
+            for article in articles:
+                if rule_name in article:
+                    return True
+        
+        # 5. 행정규칙이 법령을 근거로 하는가? (발령근거 체크)
+        issue_basis = admin_rule.get('발령근거', '')
+        if law_name in issue_basis or law_id in issue_basis:
+            return True
+        
+        return False
+    
+    def _extract_keywords(self, text: str) -> Set[str]:
+        """텍스트에서 주요 키워드 추출"""
+        # 불필요한 단어 제거
+        stop_words = {
+            '관한', '법률', '시행', '규칙', '등에', '대한', '및', '의', '을', '를',
+            '이', '가', '은', '는', '에', '와', '과', '으로', '로', '부터', '까지'
+        }
+        
+        # 한글 단어만 추출 (2글자 이상)
+        keywords = set(re.findall(r'[가-힣]{2,}', text))
+        
+        # 불필요한 단어 제거
+        keywords = keywords - stop_words
+        
+        return keywords
+    
+    def _search_admin_rules_by_law_id(self, law_id: str, admin_rules: AdminRules, seen_ids: Set):
         """법령ID로 행정규칙 직접 검색"""
         try:
-            # 법령ID를 query로 사용하여 행정규칙 검색
+            # 법령ID를 query로 사용
             result = self.law_client.search(
                 target='admrul',
                 query=law_id,
-                display=200  # 충분히 많이 가져오기
+                display=100
             )
             
             if result and result.get('totalCnt', 0) > 0:
@@ -562,46 +505,65 @@ class LawHierarchySearcher:
                     rule_id = rule.get('행정규칙ID')
                     if rule_id and rule_id not in seen_ids:
                         self._categorize_admin_rule(rule, admin_rules, seen_ids)
+                        
         except Exception as e:
-            logger.error(f"법령ID 직접 행정규칙 검색 오류: {e}")
+            logger.error(f"법령ID 행정규칙 검색 오류: {e}")
     
-    def _search_admin_rules_by_department_all(self, law_id: str, law_name: str, 
-                                             dept_code: str, admin_rules: AdminRules, seen_ids: Set):
-        """소관부처 전체 행정규칙 조회 후 관련성 필터링"""
-        try:
-            # 소관부처의 모든 행정규칙 가져오기
-            result = self.law_client.search(
-                target='admrul',
-                query='*',  # 전체 검색
-                org=dept_code,
-                display=500  # 최대한 많이
-            )
-            
-            if result and result.get('totalCnt', 0) > 0:
-                base_name = self.name_processor.extract_base_name(law_name)
+    def _search_admin_rules_by_keywords(self, law_name: str, admin_rules: AdminRules, 
+                                       seen_ids: Set, dept_code: Optional[str]):
+        """법령명 키워드로 행정규칙 검색"""
+        # 키워드 추출
+        keywords = self._extract_keywords(law_name)
+        
+        # 주요 키워드로 검색
+        for keyword in list(keywords)[:5]:  # 상위 5개 키워드만
+            if len(keyword) < 3:  # 너무 짧은 키워드는 제외
+                continue
                 
-                for rule in result.get('results', []):
-                    rule_id = rule.get('행정규칙ID')
-                    rule_name = rule.get('행정규칙명', '')
-                    
-                    if rule_id and rule_id not in seen_ids:
-                        # 관련성 체크
-                        if self._is_related_admin_rule(law_id, law_name, base_name, rule_name):
-                            self._categorize_admin_rule(rule, admin_rules, seen_ids)
-        except Exception as e:
-            logger.error(f"소관부처 행정규칙 검색 오류: {e}")
+            try:
+                params = {
+                    'target': 'admrul',
+                    'query': keyword,
+                    'display': 50
+                }
+                
+                if dept_code:
+                    params['org'] = dept_code
+                
+                result = self.law_client.search(**params)
+                
+                if result and result.get('totalCnt', 0) > 0:
+                    for rule in result.get('results', []):
+                        rule_id = rule.get('행정규칙ID')
+                        rule_name = rule.get('행정규칙명', '')
+                        
+                        # 추가 관련성 체크
+                        if rule_id and rule_id not in seen_ids:
+                            # 키워드가 실제로 관련있는지 확인
+                            if keyword in rule_name:
+                                self._categorize_admin_rule(rule, admin_rules, seen_ids)
+                                
+            except Exception as e:
+                logger.error(f"키워드 행정규칙 검색 오류: {e}")
     
-    def _search_referenced_admin_rules(self, articles: List[str], admin_rules: AdminRules, 
-                                      seen_ids: Set, dept_code: Optional[str]):
-        """법령 조문에서 언급된 행정규칙 검색"""
+    def _extract_and_search_referenced_rules(self, law_detail: Dict, admin_rules: AdminRules, 
+                                            seen_ids: Set, dept_code: Optional[str]):
+        """법령 본문에서 참조된 행정규칙 추출 및 검색"""
+        if '조문내용' not in law_detail:
+            return
+        
+        articles = law_detail.get('조문내용', [])
+        if isinstance(articles, str):
+            articles = [articles]
+        
         # 행정규칙 패턴
         patterns = [
-            r'[가-힣]+\s*고시',
-            r'[가-힣]+\s*훈령',
-            r'[가-힣]+\s*예규',
-            r'[가-힣]+\s*지침',
-            r'[가-힣]+\s*규정',
-            r'「([^」]+)」',  # 법령명 인용
+            r'([가-힣]+(?:\s+및\s+[가-힣]+)*)\s*고시',
+            r'([가-힣]+(?:\s+및\s+[가-힣]+)*)\s*훈령',
+            r'([가-힣]+(?:\s+및\s+[가-힣]+)*)\s*예규',
+            r'([가-힣]+(?:\s+및\s+[가-힣]+)*)\s*지침',
+            r'([가-힣]+(?:\s+및\s+[가-힣]+)*)\s*규정',
+            r'「([^」]+(?:고시|훈령|예규|지침|규정))」'
         ]
         
         found_rules = set()
@@ -610,10 +572,8 @@ class LawHierarchySearcher:
             for pattern in patterns:
                 matches = re.findall(pattern, article)
                 for match in matches:
-                    if isinstance(match, str) and len(match) > 2:
-                        # 행정규칙 키워드가 포함된 경우만
-                        if any(keyword in match for keyword in ['고시', '훈령', '예규', '지침', '규정']):
-                            found_rules.add(match)
+                    if isinstance(match, str) and len(match) > 3:
+                        found_rules.add(match.strip())
         
         # 찾은 행정규칙명으로 검색
         for rule_name in found_rules:
@@ -634,54 +594,20 @@ class LawHierarchySearcher:
                         rule_id = rule.get('행정규칙ID')
                         if rule_id and rule_id not in seen_ids:
                             self._categorize_admin_rule(rule, admin_rules, seen_ids)
+                            
             except Exception as e:
                 logger.error(f"참조 행정규칙 검색 오류: {e}")
     
-    def _search_admin_rules_by_name(self, base_name: str, admin_rules: AdminRules, 
-                                   seen_ids: Set, dept_code: Optional[str]):
-        """법령명 기반 행정규칙 검색 (보조)"""
-        rule_types = [
-            ('directive', '훈령'),
-            ('regulation', '예규'),
-            ('notice', '고시'),
-            ('guideline', '지침'),
-            ('rule', '규정')
-        ]
-        
-        for category_key, type_name in rule_types:
-            try:
-                params = {
-                    'target': 'admrul',
-                    'query': f"{base_name} {type_name}",
-                    'display': 20
-                }
-                
-                if dept_code:
-                    params['org'] = dept_code
-                
-                result = self.law_client.search(**params)
-                
-                if result and result.get('totalCnt', 0) > 0:
-                    for rule in result.get('results', []):
-                        rule_id = rule.get('행정규칙ID')
-                        rule_name = rule.get('행정규칙명', '')
-                        
-                        if rule_id and rule_id not in seen_ids and type_name in rule_name:
-                            self._categorize_admin_rule(rule, admin_rules, seen_ids)
-            except Exception as e:
-                logger.error(f"법령명 기반 행정규칙 검색 오류: {e}")
-    
-    def _search_attachments_by_id(self, law_id: str, law_name: str) -> List[Dict]:
-        """법령 별표서식 검색 (법령ID 직접 검색)"""
+    def _search_law_attachments(self, law_id: str, law_name: str) -> List[Dict]:
+        """법령 별표서식 검색"""
         attachments = []
         seen_ids = set()
         
         try:
-            # 법령ID로 직접 검색 (search=2: 해당법령검색)
+            # 법령ID로 직접 검색
             result = self.law_client.search(
                 target='licbyl',
                 query=law_id,
-                search=2,
                 display=200
             )
             
@@ -693,199 +619,107 @@ class LawHierarchySearcher:
                         seen_ids.add(attach_id)
             
             # 법령명으로 추가 검색
-            if len(attachments) < 10:  # 너무 적으면 추가 검색
+            if len(attachments) < 10:
                 result = self.law_client.search(
                     target='licbyl',
                     query=law_name,
-                    search=2,
                     display=50
                 )
                 
                 if result and result.get('totalCnt', 0) > 0:
                     for attach in result.get('results', []):
                         attach_id = attach.get('별표서식ID')
-                        attach_law = attach.get('해당법령명', '')
-                        
                         if attach_id and attach_id not in seen_ids:
-                            # 관련 법령인지 확인
-                            if law_id in str(attach.get('해당법령ID', '')) or \
-                               self._is_related_law(law_name, attach_law):
+                            # 해당 법령의 별표서식인지 확인
+                            if law_id in str(attach.get('해당법령ID', '')):
                                 attachments.append(attach)
                                 seen_ids.add(attach_id)
-            
+                                
         except Exception as e:
             logger.error(f"별표서식 검색 오류: {e}")
         
         return attachments
     
-    def _search_admin_attachments_enhanced(self, admin_rules: AdminRules) -> List[Dict]:
-        """행정규칙 별표서식 검색 (개선)"""
+    def _search_admin_attachments(self, admin_rules: AdminRules) -> List[Dict]:
+        """행정규칙 별표서식 검색"""
         attachments = []
         seen_ids = set()
         
-        # 모든 행정규칙에 대해 별표서식 검색
-        for rule in admin_rules.get_all():
+        # 각 행정규칙에 대해 별표서식 검색
+        for rule in admin_rules.get_all()[:50]:  # 너무 많으면 상위 50개만
             rule_id = rule.get('행정규칙ID')
-            rule_name = rule.get('행정규칙명', '')
             
             if not rule_id:
                 continue
             
             try:
-                # 행정규칙ID로 직접 검색
                 result = self.law_client.search(
                     target='admbyl',
                     query=rule_id,
-                    search=2,  # 해당행정규칙검색
-                    display=50
+                    display=20
                 )
                 
                 if result and result.get('totalCnt', 0) > 0:
                     for attach in result.get('results', []):
                         attach_id = attach.get('별표서식ID')
                         if attach_id and attach_id not in seen_ids:
-                            attach['관련행정규칙'] = rule_name
+                            attach['관련행정규칙'] = rule.get('행정규칙명', '')
                             attachments.append(attach)
                             seen_ids.add(attach_id)
-                
-                # 행정규칙명으로도 검색
-                if len(attachments) < 5:  # 너무 적으면
-                    result = self.law_client.search(
-                        target='admbyl',
-                        query=rule_name,
-                        search=2,
-                        display=20
-                    )
-                    
-                    if result and result.get('totalCnt', 0) > 0:
-                        for attach in result.get('results', []):
-                            attach_id = attach.get('별표서식ID')
-                            if attach_id and attach_id not in seen_ids:
-                                attach['관련행정규칙'] = rule_name
-                                attachments.append(attach)
-                                seen_ids.add(attach_id)
-                
+                            
             except Exception as e:
                 logger.error(f"행정규칙 별표서식 검색 오류: {e}")
         
         return attachments
     
-    def _search_local_laws_enhanced(self, law_id: str, law_name: str, 
-                                   admin_rules: AdminRules, dept_code: Optional[str]) -> List[Dict]:
-        """자치법규 검색 (개선)"""
+    def _search_local_laws(self, law_id: str, law_name: str, 
+                          admin_rules: AdminRules, dept_code: Optional[str]) -> List[Dict]:
+        """자치법규 검색"""
         local_laws = []
         seen_ids = set()
         
         try:
-            # 1. 법령ID로 직접 검색
+            # 1. 법령ID로 검색
             result = self.law_client.search(
                 target='ordin',
                 query=law_id,
-                display=100
+                display=50
             )
             
             if result and result.get('totalCnt', 0) > 0:
                 for law in result.get('results', []):
-                    law_id = law.get('자치법규ID')
-                    if law_id and law_id not in seen_ids:
+                    local_id = law.get('자치법규ID')
+                    if local_id and local_id not in seen_ids:
                         local_laws.append(law)
-                        seen_ids.add(law_id)
+                        seen_ids.add(local_id)
             
-            # 2. 법령명으로 검색
-            base_name = self.name_processor.extract_base_name(law_name)
-            result = self.law_client.search(
-                target='ordin',
-                query=base_name,
-                display=100
-            )
-            
-            if result and result.get('totalCnt', 0) > 0:
-                for law in result.get('results', []):
-                    law_id = law.get('자치법규ID')
-                    law_name_local = law.get('자치법규명', '')
+            # 2. 법령명 키워드로 검색
+            keywords = self._extract_keywords(law_name)
+            for keyword in list(keywords)[:3]:  # 상위 3개 키워드
+                if len(keyword) < 3:
+                    continue
                     
-                    if law_id and law_id not in seen_ids:
-                        # 관련성 체크
-                        if self._is_related_law(base_name, law_name_local):
-                            local_laws.append(law)
-                            seen_ids.add(law_id)
-            
-            # 3. 행정규칙과 연계된 자치법규 검색
-            for rule in admin_rules.get_all()[:20]:  # 상위 20개만
-                rule_name = rule.get('행정규칙명', '')
-                if rule_name:
-                    base_rule_name = self.name_processor.extract_base_name(rule_name)
-                    
-                    result = self.law_client.search(
-                        target='ordin',
-                        query=base_rule_name,
-                        display=10
-                    )
-                    
-                    if result and result.get('totalCnt', 0) > 0:
-                        for law in result.get('results', []):
-                            law_id = law.get('자치법규ID')
-                            if law_id and law_id not in seen_ids:
-                                law['연계행정규칙'] = rule_name
+                result = self.law_client.search(
+                    target='ordin',
+                    query=keyword,
+                    display=30
+                )
+                
+                if result and result.get('totalCnt', 0) > 0:
+                    for law in result.get('results', []):
+                        local_id = law.get('자치법규ID')
+                        local_name = law.get('자치법규명', '')
+                        
+                        if local_id and local_id not in seen_ids:
+                            # 관련성 체크
+                            if keyword in local_name:
                                 local_laws.append(law)
-                                seen_ids.add(law_id)
-            
+                                seen_ids.add(local_id)
+                                
         except Exception as e:
             logger.error(f"자치법규 검색 오류: {e}")
         
         return local_laws
-    
-    def _extract_referenced_admin_rules(self, law_detail: Dict) -> List[str]:
-        """법령 본문에서 참조된 행정규칙 추출"""
-        referenced_rules = []
-        
-        if '조문내용' in law_detail:
-            articles = law_detail['조문내용']
-            if isinstance(articles, str):
-                articles = [articles]
-            
-            patterns = [
-                r'[가-힣]+\s*고시(?:\s*제\d+호)?',
-                r'[가-힣]+\s*훈령(?:\s*제\d+호)?',
-                r'[가-힣]+\s*예규(?:\s*제\d+호)?',
-                r'[가-힣]+\s*지침',
-                r'[가-힣]+\s*규정',
-                r'「([^」]+(?:고시|훈령|예규|지침|규정)[^」]*)」'
-            ]
-            
-            for article in articles:
-                for pattern in patterns:
-                    matches = re.findall(pattern, article)
-                    referenced_rules.extend(matches)
-        
-        # 중복 제거
-        return list(set(referenced_rules))
-    
-    def _add_referenced_admin_rules(self, referenced_rules: List[str], 
-                                   admin_rules: AdminRules, dept_code: Optional[str]):
-        """참조된 행정규칙 추가"""
-        seen_ids = {rule.get('행정규칙ID') for rule in admin_rules.get_all() if rule.get('행정규칙ID')}
-        
-        for rule_ref in referenced_rules:
-            try:
-                params = {
-                    'target': 'admrul',
-                    'query': rule_ref,
-                    'display': 5
-                }
-                
-                if dept_code:
-                    params['org'] = dept_code
-                
-                result = self.law_client.search(**params)
-                
-                if result and result.get('totalCnt', 0) > 0:
-                    for rule in result.get('results', []):
-                        rule_id = rule.get('행정규칙ID')
-                        if rule_id and rule_id not in seen_ids:
-                            self._categorize_admin_rule(rule, admin_rules, seen_ids)
-            except Exception as e:
-                logger.error(f"참조 행정규칙 추가 오류: {e}")
     
     def _categorize_admin_rule(self, rule: Dict, admin_rules: AdminRules, seen_ids: Set):
         """행정규칙 분류"""
@@ -897,6 +731,7 @@ class LawHierarchySearcher:
         
         seen_ids.add(rule_id)
         
+        # 분류
         if '훈령' in rule_name:
             admin_rules.directive.append(rule)
         elif '예규' in rule_name:
@@ -917,48 +752,13 @@ class LawHierarchySearcher:
             return True
         
         # 주요 키워드 추출하여 비교
-        base_keywords = set(re.findall(r'[가-힣]{2,}', base_name))
-        target_keywords = set(re.findall(r'[가-힣]{2,}', target_name))
+        base_keywords = self._extract_keywords(base_name)
+        target_keywords = self._extract_keywords(target_name)
         
-        # 공통 키워드가 2개 이상이면 관련
+        # 공통 키워드가 충분히 있으면 관련
         common = base_keywords & target_keywords
-        if len(common) >= 2:
+        if len(common) >= 2 or (len(base_keywords) > 0 and len(common) / len(base_keywords) >= 0.5):
             return True
-        
-        # 핵심 키워드가 일치하면 관련
-        important_keywords = base_keywords - {'관한', '법률', '시행', '규칙', '특별', '일반'}
-        if important_keywords and important_keywords.issubset(target_keywords):
-            return True
-        
-        return False
-    
-    def _is_related_admin_rule(self, law_id: str, law_name: str, 
-                              base_name: str, rule_name: str) -> bool:
-        """행정규칙 관련성 체크"""
-        # 법령ID가 행정규칙명에 포함된 경우
-        if law_id in rule_name:
-            return True
-        
-        # 법령명이 포함된 경우
-        if base_name in rule_name:
-            return True
-        
-        # 주요 키워드 매칭
-        law_keywords = set(re.findall(r'[가-힣]{2,}', base_name))
-        rule_keywords = set(re.findall(r'[가-힣]{2,}', rule_name))
-        
-        # 불필요한 키워드 제거
-        stop_words = {'관한', '법률', '시행', '규칙', '등에', '대한', '및', '의', '을', '를'}
-        law_keywords = law_keywords - stop_words
-        rule_keywords = rule_keywords - stop_words
-        
-        # 공통 키워드가 있으면 관련
-        common = law_keywords & rule_keywords
-        if len(common) >= 1 and len(law_keywords) > 0:
-            # 키워드 비율 체크
-            ratio = len(common) / len(law_keywords)
-            if ratio >= 0.3:  # 30% 이상 일치
-                return True
         
         return False
 
